@@ -2,7 +2,7 @@
   "name": "faktum",
   "version": "1.0.0",
   "description": "Faktum — Descargador masivo de comprobantes electrónicos del SRI (Ecuador) multi-RUC con exportación a Excel",
-  "author": "Faktum",
+  "author": "SystMa",
   "private": true,
   "main": "dist/main/index.js",
   "allowScripts": {
@@ -20,7 +20,10 @@
     "start": "npm run build && electron .",
     "brand:mac": "bash scripts/brand-mac-dev.sh",
     "postinstall": "node -e \"if (process.platform === 'darwin') require('node:child_process').execFileSync('bash', ['scripts/brand-mac-dev.sh'], { stdio: 'inherit' })\"",
-    "test": "vitest run"
+    "test": "vitest run",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
@@ -39,6 +42,7 @@
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
     "typescript": "^5.7.2",
     "vite": "^6.0.3",
     "vitest": "^2.1.8",

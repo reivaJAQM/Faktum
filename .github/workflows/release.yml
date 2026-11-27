@@ -1,0 +1,87 @@
+name: Release Faktum
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  CSC_IDENTITY_AUTO_DISCOVERY: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win
+            script: dist:win
+            files: |
+              release/Faktum-win-x64.zip
+          - os: macos-latest
+            platform: mac
+            script: dist:mac
+            files: |
+              release/Faktum-mac-arm64.zip
+              release/Faktum-mac-x64.zip
+          - os: ubuntu-latest
+            platform: linux
+            script: dist:linux
+            files: |
+              release/Faktum-linux-x64.tar.gz
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm test
+      - run: npm run ${{ matrix.script }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: faktum-${{ matrix.platform }}
+          if-no-files-found: error
+          path: ${{ matrix.files }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            TAG="${{ github.ref_name }}"
+          else
+            VERSION="$(node -p "require('./package.json').version")"
+            TAG="v${VERSION}"
+          fi
+
+          ls -lh release-assets
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" release-assets/* --clobber
+          else
+            gh release create "$TAG" release-assets/* \
+              --title "Faktum $TAG" \
+              --generate-notes \
+              --latest
+          fi

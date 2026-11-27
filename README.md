@@ -77,93 +77,36 @@ tests/
 └── sri.test.ts                   # Pruebas unitarias de servicios núcleo
 ```
 
-## Requisitos previos
-
-- Node.js 20 o superior (recomendado Node.js 22 LTS)
-- npm 10 o superior
-- Git
-
 ## Instalación
 
-El comando `npm run setup` compila el proyecto y registra la aplicación en el sistema operativo (Escritorio y Menú Inicio en Windows; `/Applications/Faktum.app` en macOS; menú de aplicaciones en Linux). Mantén el directorio del repositorio en su ubicación tras la instalación.
-
-### Windows
+### Windows (PowerShell)
 
 ```powershell
-winget install --id Git.Git -e
-winget install --id OpenJS.NodeJS.LTS -e
+irm https://raw.githubusercontent.com/reivaJAQM/Faktum/main/install.ps1 | iex
 ```
 
-En una nueva sesión de PowerShell o CMD:
-
-```powershell
-git clone https://github.com/reivaJAQM/Faktum.git
-cd Faktum
-npm install
-npm run setup
-```
-
-### macOS
+### macOS y Linux
 
 ```bash
-brew install git node@22
-git clone https://github.com/reivaJAQM/Faktum.git
-cd Faktum
-npm install
-npm run setup
+curl -fsSL https://raw.githubusercontent.com/reivaJAQM/Faktum/main/install.sh | bash
 ```
 
-### Linux
+Para actualizar a la última versión, ejecuta nuevamente el mismo comando de instalación.
 
-Dependencias del sistema:
+## Desarrollo local
 
-- **Ubuntu / Debian** *(usar `libasound2` en versiones anteriores a Ubuntu 24.04)*:
-  ```bash
-  sudo apt update
-  sudo apt install -y git curl libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 gnome-keyring
-  ```
-- **Fedora:**
-  ```bash
-  sudo dnf install -y git nodejs npm nss atk at-spi2-atk cups-libs libdrm libxkbcommon libXcomposite libXdamage libXfixes libXrandr mesa-libgbm alsa-lib gnome-keyring
-  ```
-- **Arch Linux:**
-  ```bash
-  sudo pacman -S --needed git nodejs npm nss gtk3 libxss alsa-lib gnome-keyring
-  ```
-
-Instalación:
+Requisitos: Node.js 20+, npm 10+ y Git.
 
 ```bash
 git clone https://github.com/reivaJAQM/Faktum.git
 cd Faktum
 npm install
-npm run setup
-```
-
-En entornos Linux con restricción de sandbox de Chromium:
-
-```bash
-npm run setup -- --no-sandbox
-```
-
-## Actualización
-
-```bash
-git pull origin main
-npm install
-npm run build
-```
-
-## Desinstalación
-
-```bash
-npm run uninstall-app
-```
-
-## Desarrollo y pruebas
-
-```bash
 npm run dev
+```
+
+Pruebas:
+
+```bash
 npm test
 ```
 

@@ -1,0 +1,40 @@
+appId: com.faktum.sri
+productName: Faktum
+copyright: Copyright © 2026 SystMa
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - build/icon.png
+  - build/icon.ico
+  - package.json
+extraResources:
+  - from: build/icon.png
+    to: icon.png
+mac:
+  icon: build/icon.icns
+  category: public.app-category.finance
+  identity: null
+  target:
+    - target: zip
+      arch:
+        - arm64
+        - x64
+  artifactName: Faktum-mac-${arch}.${ext}
+win:
+  icon: build/icon.ico
+  target:
+    - target: zip
+      arch:
+        - x64
+  artifactName: Faktum-win-${arch}.${ext}
+linux:
+  icon: build/icon.png
+  category: Finance
+  executableName: faktum
+  target:
+    - target: tar.gz
+      arch:
+        - x64
+  artifactName: Faktum-linux-${arch}.${ext}
