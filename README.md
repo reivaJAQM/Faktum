@@ -77,21 +77,10 @@ tests/
 └── sri.test.ts                   # Pruebas unitarias de servicios núcleo
 ```
 
-## Instalación
+## Instalación en Windows
 
-### Windows (PowerShell)
-
-```powershell
-irm https://raw.githubusercontent.com/reivaJAQM/Faktum/main/install.ps1 | iex
-```
-
-### macOS y Linux
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/reivaJAQM/Faktum/main/install.sh | bash
-```
-
-Para actualizar a la última versión, ejecuta nuevamente el mismo comando de instalación.
+1. Descarga el instalador `Faktum-Setup-<version>.exe` desde la sección [Releases](https://github.com/reivaJAQM/Faktum/releases/latest).
+2. Ejecuta el archivo y sigue el asistente de instalación.
 
 ## Desarrollo local
 
@@ -104,10 +93,11 @@ npm install
 npm run dev
 ```
 
-Pruebas:
+Pruebas y generación del instalador de Windows:
 
 ```bash
 npm test
+npm run dist:win
 ```
 
 ## Seguridad y privacidad

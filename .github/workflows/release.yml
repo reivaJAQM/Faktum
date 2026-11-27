@@ -1,4 +1,4 @@
-name: Release Faktum
+name: Build Windows Installer
 
 on:
   workflow_dispatch:
@@ -13,28 +13,8 @@ env:
   CSC_IDENTITY_AUTO_DISCOVERY: false
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: windows-latest
-            platform: win
-            script: dist:win
-            files: |
-              release/Faktum-win-x64.zip
-          - os: macos-latest
-            platform: mac
-            script: dist:mac
-            files: |
-              release/Faktum-mac-arm64.zip
-              release/Faktum-mac-x64.zip
-          - os: ubuntu-latest
-            platform: linux
-            script: dist:linux
-            files: |
-              release/Faktum-linux-x64.tar.gz
-    runs-on: ${{ matrix.os }}
+  build-windows:
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
 
@@ -45,26 +25,10 @@ jobs:
 
       - run: npm ci
       - run: npm test
-      - run: npm run ${{ matrix.script }}
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: faktum-${{ matrix.platform }}
-          if-no-files-found: error
-          path: ${{ matrix.files }}
-
-  publish:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          merge-multiple: true
+      - run: npm run dist:win
 
       - name: Publish GitHub Release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -75,12 +39,16 @@ jobs:
             TAG="v${VERSION}"
           fi
 
-          ls -lh release-assets
+          INSTALLER="$(ls -1 release/Faktum-Setup-*.exe | head -n 1)"
+          if [ -z "$INSTALLER" ] || [ ! -f "$INSTALLER" ]; then
+            echo "No se encontró Faktum-Setup-*.exe en release/" >&2
+            exit 1
+          fi
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" release-assets/* --clobber
+            gh release upload "$TAG" "$INSTALLER" --clobber
           else
-            gh release create "$TAG" release-assets/* \
+            gh release create "$TAG" "$INSTALLER" \
               --title "Faktum $TAG" \
               --generate-notes \
               --latest

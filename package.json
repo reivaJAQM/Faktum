@@ -15,15 +15,11 @@
     "build:electron": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "build": "npm run build:electron && npm run build:renderer",
-    "setup": "npm run build && node scripts/setup-app.mjs",
-    "uninstall-app": "node scripts/setup-app.mjs --uninstall",
     "start": "npm run build && electron .",
     "brand:mac": "bash scripts/brand-mac-dev.sh",
     "postinstall": "node -e \"if (process.platform === 'darwin') require('node:child_process').execFileSync('bash', ['scripts/brand-mac-dev.sh'], { stdio: 'inherit' })\"",
     "test": "vitest run",
-    "dist:mac": "npm run build && electron-builder --mac --publish never",
-    "dist:win": "npm run build && electron-builder --win --publish never",
-    "dist:linux": "npm run build && electron-builder --linux --publish never"
+    "dist:win": "npm run build && electron-builder --win --publish never"
   },
   "dependencies": {
     "exceljs": "^4.4.0",
