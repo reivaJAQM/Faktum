@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import {
   SRI_DOC_TYPES,
+  SRI_PORTAL_RECIBIDOS_DOC_CODES,
   type DownloadFormats,
   type DownloadProgressEvent,
   type PortalStatusEvent,
@@ -44,8 +45,12 @@ const MONTHS = [
 
 type QueryMode = 'month' | 'year' | 'range';
 
-function buildYearRange(year: number): { fromDate: string; toDate: string } {
-  return { fromDate: `${year}-01-01`, toDate: `${year}-12-31` };
+function buildYearRange(year: number, todayIso: string): { fromDate: string; toDate: string } {
+  const endOfYear = `${year}-12-31`;
+  return {
+    fromDate: `${year}-01-01`,
+    toDate: endOfYear > todayIso ? todayIso : endOfYear,
+  };
 }
 
 function countMonthsBetween(fromIso: string, toIso: string): number {
@@ -66,6 +71,7 @@ interface PortalWorkspaceProps {
   onOpenNewProfile: () => void;
   portalStatus: PortalStatusEvent;
   downloadProgress: DownloadProgressEvent | null;
+  onClearDownloadProgress: () => void;
   rangeProgress: RangeProgressEvent | null;
   onClearRangeProgress: () => void;
   defaultFormats: DownloadFormats;
@@ -85,6 +91,7 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   onOpenNewProfile,
   portalStatus,
   downloadProgress,
+  onClearDownloadProgress,
   rangeProgress,
   onClearRangeProgress,
   defaultFormats,
@@ -107,7 +114,7 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   const [rangeXml, setRangeXml] = useState(defaultFormats.xml);
   const [rangePdf, setRangePdf] = useState(defaultFormats.pdf);
   const [rangeExcel, setRangeExcel] = useState(defaultFormats.excel);
-  const [docType, setDocType] = useState('ALL');
+  const [docType, setDocType] = useState('01');
   const [portalOpen, setPortalOpen] = useState(false);
   const [feedback, setFeedback] = useState('');
   const [openDropdowns, setOpenDropdowns] = useState(0);
@@ -131,9 +138,13 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   const years = Array.from({ length: 8 }, (_, i) => now.getFullYear() - i);
 
   const effectiveRange = useMemo(() => {
-    if (mode === 'year') return buildYearRange(year);
-    return { fromDate, toDate };
-  }, [mode, year, fromDate, toDate]);
+    if (mode === 'year') return buildYearRange(year, todayIso);
+    const [minDate, maxDate] = fromDate <= toDate ? [fromDate, toDate] : [toDate, fromDate];
+    return {
+      fromDate: minDate,
+      toDate: maxDate > todayIso && minDate <= todayIso ? todayIso : maxDate,
+    };
+  }, [mode, year, fromDate, toDate, todayIso]);
 
   const rangeMonthsCount = useMemo(
     () => countMonthsBetween(effectiveRange.fromDate, effectiveRange.toDate),
@@ -194,22 +205,48 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   const isDownloading = downloadProgress?.status === 'running';
   const anyRangeFormat = rangeXml || rangePdf || rangeExcel;
 
-  // Automatically sync single-month filters to the SRI portal whenever changed
+  // Automatically sync filters (including Tipo de comprobante) to the SRI portal whenever changed
   const isFirstFilterRender = useRef(true);
   useEffect(() => {
     if (isFirstFilterRender.current) {
       isFirstFilterRender.current = false;
       return;
     }
-    if (mode !== 'month' || !portalOpen || !selectedProfileId) return;
+    if (!portalOpen || !selectedProfileId || rangeProgress?.active || isDownloading) return;
+
+    if (mode === 'month') {
+      void window.faktum.applyPortalFilters({
+        profileId: selectedProfileId,
+        year,
+        month,
+        day,
+        docType,
+      });
+      return;
+    }
+
+    const fromMatch = effectiveRange.fromDate.match(/^(\d{4})-(\d{2})-\d{2}$/);
+    const targetYear = mode === 'year' ? year : Number(fromMatch?.[1] ?? year);
+    const targetMonth = mode === 'year' ? 1 : Number(fromMatch?.[2] ?? month);
     void window.faktum.applyPortalFilters({
       profileId: selectedProfileId,
-      year,
-      month,
-      day,
+      year: targetYear,
+      month: targetMonth,
+      day: 0,
       docType,
     });
-  }, [mode, portalOpen, selectedProfileId, year, month, day, docType]);
+  }, [
+    mode,
+    portalOpen,
+    selectedProfileId,
+    year,
+    month,
+    day,
+    docType,
+    effectiveRange.fromDate,
+    rangeProgress?.active,
+    isDownloading,
+  ]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -271,6 +308,7 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
       return;
     }
     setFeedback('');
+    if (!isDownloading) onClearDownloadProgress();
     try {
       const res = await window.faktum.startDateRange(
         {
@@ -304,6 +342,7 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
       return;
     }
     setFeedback('');
+    if (!isDownloading) onClearDownloadProgress();
     try {
       const res = await window.faktum.consultMonth(
         { profileId: selectedProfileId, year, month, day, docType },
@@ -332,6 +371,7 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   const handleClosePortal = async () => {
     await window.faktum.closePortal();
     onClearRangeProgress();
+    if (!isDownloading) onClearDownloadProgress();
     setPortalOpen(false);
     setFeedback('');
   };
@@ -342,11 +382,9 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
       : 0;
 
   // Show a single unified status strip below the toolbar (never two stacked conflicting banners)
+  const hasSelectedAccount = Boolean(selectedProfileId);
   const isPeriodRange = mode === 'year' || mode === 'range';
-  const showRangeStrip = isPeriodRange;
-  const bannerMessage = feedback || portalStatus.message;
-  const hasBannerAction = capturedCount > 0 && mode === 'month';
-  const showPortalBanner = !showRangeStrip && (Boolean(bannerMessage) || hasBannerAction);
+  const showRangeStrip = hasSelectedAccount && isPeriodRange;
   const rangeActive = Boolean(rangeProgress?.active);
   const rangeFinished = Boolean(rangeProgress && !rangeProgress.active);
   const hideStaleRangeProgress = Boolean(
@@ -356,6 +394,11 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
       downloadProgress.errors.length === 0
   );
   const showProgressStrip = Boolean(downloadProgress && !hideStaleRangeProgress);
+  const bannerMessage = feedback || portalStatus.message;
+  const hasBannerAction = capturedCount > 0 && mode === 'month' && !showProgressStrip;
+  const showPortalBanner =
+    !showRangeStrip &&
+    (Boolean(feedback) || (!showProgressStrip && (Boolean(portalStatus.message) || hasBannerAction)));
   const activeRangeMonthLabel = rangeProgress
     ? (MONTHS[rangeProgress.currentMonth - 1]?.label ?? String(rangeProgress.currentMonth))
     : '';
@@ -363,296 +406,321 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
   return (
     <div className="portal-workspace">
       <div className="portal-toolbar">
-        <div className="toolbar-field toolbar-field-ruc">
-          <label htmlFor="sri-ruc-select">RUC / Empresa</label>
-          <div className="toolbar-ruc-row">
-            <div className="toolbar-ruc-select-wrap">
-              <FaktumSelect
-                id="sri-ruc-select"
-                name="ruc"
-                value={selectedProfileId}
-                placeholder={profiles.length === 0 ? 'Sin perfiles RUC' : '— Seleccionar RUC —'}
-                options={[
-                  {
-                    value: '',
-                    label: profiles.length === 0 ? 'Sin perfiles RUC' : '— Seleccionar RUC —',
-                  },
-                  ...profiles.map((p) => ({
-                    value: p.id,
-                    label: p.alias,
-                    hint: p.ruc,
-                  })),
-                ]}
-                onOpenChange={handleDropdownOpenChange}
-                onChange={(nextId) => {
-                  onSelectProfile(nextId);
-                  onClearRangeProgress();
-                  if (!nextId && portalOpen) {
-                    void handleClosePortal();
-                  } else if (nextId && portalOpen) {
-                    void handleOpenPortal(nextId);
-                  }
-                }}
-              />
-            </div>
-            <button
-              type="button"
-              className="btn btn-icon"
-              title="Agregar nuevo RUC"
-              aria-label="Agregar nuevo perfil RUC"
-              onClick={onOpenNewProfile}
-            >
-              <Plus size={15} aria-hidden="true" />
-            </button>
-          </div>
-        </div>
-
-        <div className="toolbar-field">
-          <label>Período</label>
-          <div className="segmented-control" role="group" aria-label="Modo de período">
-            <button
-              type="button"
-              className={mode === 'month' ? 'is-active' : ''}
-              onClick={() => handleModeChange('month')}
-            >
-              Por mes
-            </button>
-            <button
-              type="button"
-              className={mode === 'year' ? 'is-active' : ''}
-              onClick={() => handleModeChange('year')}
-            >
-              Por año
-            </button>
-            <button
-              type="button"
-              className={mode === 'range' ? 'is-active' : ''}
-              onClick={() => handleModeChange('range')}
-            >
-              Rango
-            </button>
-          </div>
-        </div>
-
-        {mode === 'month' ? (
-          <>
-            <div className="toolbar-field">
-              <label htmlFor="sri-year">Año</label>
-              <FaktumSelect
-                id="sri-year"
-                name="year"
-                minWidth={78}
-                value={String(year)}
-                options={years.map((y) => ({ value: String(y), label: String(y) }))}
-                onOpenChange={handleDropdownOpenChange}
-                onChange={(val) => setYear(Number(val))}
-              />
-            </div>
-
-            <div className="toolbar-field">
-              <label htmlFor="sri-month">Mes</label>
-              <FaktumSelect
-                id="sri-month"
-                name="month"
-                minWidth={112}
-                value={String(month)}
-                options={MONTHS.map((m) => ({ value: String(m.value), label: m.label }))}
-                onOpenChange={handleDropdownOpenChange}
-                onChange={(val) => setMonth(Number(val))}
-              />
-            </div>
-
-            <div className="toolbar-field">
-              <label htmlFor="sri-day">Día</label>
-              <FaktumSelect
-                id="sri-day"
-                name="day"
-                minWidth={74}
-                value={String(day)}
-                options={[
-                  { value: '0', label: 'Todos' },
-                  ...Array.from({ length: 31 }, (_, i) => i + 1).map((d) => ({
-                    value: String(d),
-                    label: String(d).padStart(2, '0'),
-                  })),
-                ]}
-                onOpenChange={handleDropdownOpenChange}
-                onChange={(val) => setDay(Number(val))}
-              />
-            </div>
-          </>
-        ) : mode === 'year' ? (
-          <div className="toolbar-field">
-            <label htmlFor="sri-year-mode">Año</label>
-            <FaktumSelect
-              id="sri-year-mode"
-              name="yearOnly"
-              minWidth={94}
-              value={String(year)}
-              disabled={isDownloading || rangeActive}
-              options={years.map((y) => ({ value: String(y), label: String(y) }))}
-              onOpenChange={handleDropdownOpenChange}
-              onChange={(val) => setYear(Number(val))}
-            />
-          </div>
-        ) : (
-          <>
-            <div className="toolbar-field">
-              <label htmlFor="sri-from-date">Desde</label>
-              <FaktumDatePicker
-                id="sri-from-date"
-                ariaLabel="Fecha desde"
-                value={fromDate}
-                rangeStart={fromDate}
-                rangeEnd={toDate}
-                activeEndpoint="start"
-                disabled={isDownloading || rangeActive}
-                onOpenChange={handleCalendarOpenChange}
-                onChange={(nextFrom) => {
-                  setFromDate(nextFrom);
-                  if (nextFrom > toDate) {
-                    setToDate(nextFrom);
-                  }
-                }}
-                onSelectRange={(nextFrom, nextTo) => {
-                  setFromDate(nextFrom);
-                  setToDate(nextTo);
-                }}
-              />
-            </div>
-
-            <div className="toolbar-field">
-              <label htmlFor="sri-to-date">Hasta</label>
-              <FaktumDatePicker
-                id="sri-to-date"
-                ariaLabel="Fecha hasta"
-                value={toDate}
-                rangeStart={fromDate}
-                rangeEnd={toDate}
-                activeEndpoint="end"
-                disabled={isDownloading || rangeActive}
-                onOpenChange={handleCalendarOpenChange}
-                onChange={(nextTo) => {
-                  setToDate(nextTo);
-                  if (nextTo < fromDate) {
-                    setFromDate(nextTo);
-                  }
-                }}
-                onSelectRange={(nextFrom, nextTo) => {
-                  setFromDate(nextFrom);
-                  setToDate(nextTo);
-                }}
-              />
-            </div>
-          </>
-        )}
-
-        <div className="toolbar-field toolbar-field-doctype">
-          <label htmlFor="sri-doctype">Comprobante</label>
-          <FaktumSelect
-            id="sri-doctype"
-            name="docType"
-            value={docType}
-            options={Object.entries(SRI_DOC_TYPES).map(([key, meta]) => ({
-              value: key,
-              label: meta.label,
-            }))}
-            onOpenChange={handleDropdownOpenChange}
-            onChange={setDocType}
-          />
-        </div>
-
-        <div className="toolbar-utils">
-          {isPeriodRange && (
-            <button
-              type="button"
-              className="btn btn-primary toolbar-connect-btn"
-              disabled={
-                (!selectedProfileId && profiles.length > 0) ||
-                !anyRangeFormat ||
-                rangeActive ||
-                isDownloading
-              }
-              onClick={() => void handleStartRange()}
-            >
-              <Download size={15} aria-hidden="true" />
-              {rangeFinished ? 'Descargar de nuevo' : 'Descargar Facturas'}
-            </button>
-          )}
-
-          {!isPeriodRange && (
-            <>
+        {/* Row 1: RUC / Empresa + Primary Actions & Portal Controls */}
+        <div className="portal-toolbar-top">
+          <div className="toolbar-inline-group toolbar-field-ruc">
+            <label htmlFor="sri-ruc-select" className="toolbar-inline-label">
+              RUC / Empresa
+            </label>
+            <div className="toolbar-ruc-row">
+              <div className="toolbar-ruc-select-wrap">
+                <FaktumSelect
+                  id="sri-ruc-select"
+                  name="ruc"
+                  value={selectedProfileId}
+                  placeholder={profiles.length === 0 ? 'Sin perfiles RUC' : '— Seleccionar RUC —'}
+                  options={[
+                    {
+                      value: '',
+                      label: profiles.length === 0 ? 'Sin perfiles RUC' : '— Seleccionar RUC —',
+                    },
+                    ...profiles.map((p) => ({
+                      value: p.id,
+                      label: p.alias,
+                      hint: p.ruc,
+                    })),
+                  ]}
+                  onOpenChange={handleDropdownOpenChange}
+                  onChange={(nextId) => {
+                    onSelectProfile(nextId);
+                    onClearRangeProgress();
+                    if (!nextId && portalOpen) {
+                      void handleClosePortal();
+                    } else if (nextId && portalOpen) {
+                      void handleOpenPortal(nextId);
+                    }
+                  }}
+                />
+              </div>
               <button
                 type="button"
-                className="btn btn-primary toolbar-connect-btn"
-                disabled={(!selectedProfileId && profiles.length > 0) || isDownloading}
-                onClick={() => void handleDownloadMonth()}
+                className="btn btn-icon"
+                title="Agregar nuevo RUC"
+                aria-label="Agregar nuevo perfil RUC"
+                onClick={onOpenNewProfile}
               >
-                <Download size={15} aria-hidden="true" />
-                Descargar Facturas
+                <Plus size={15} aria-hidden="true" />
               </button>
-              {!portalOpen && (
+            </div>
+          </div>
+
+          {(hasSelectedAccount || portalOpen) && (
+            <div className="toolbar-utils">
+              {isPeriodRange && (
+                <button
+                  type="button"
+                  className="btn btn-primary toolbar-connect-btn"
+                  disabled={!anyRangeFormat || rangeActive || isDownloading}
+                  onClick={() => void handleStartRange()}
+                >
+                  <Download size={15} aria-hidden="true" />
+                  {rangeFinished ? 'Descargar de nuevo' : 'Descargar Facturas'}
+                </button>
+              )}
+
+              {!isPeriodRange && (
+                <>
+                  <button
+                    type="button"
+                    className="btn btn-primary toolbar-connect-btn"
+                    disabled={isDownloading}
+                    onClick={() => void handleDownloadMonth()}
+                  >
+                    <Download size={15} aria-hidden="true" />
+                    Descargar Facturas
+                  </button>
+                  {!portalOpen && (
+                    <button
+                      type="button"
+                      className="btn toolbar-connect-btn"
+                      title="Abrir el portal del SRI sin iniciar la descarga"
+                      onClick={() => void handleOpenPortal()}
+                    >
+                      <PlugZap size={15} aria-hidden="true" />
+                      Conectar
+                    </button>
+                  )}
+                </>
+              )}
+
+              {portalOpen && capturedCount > 0 && mode === 'month' && !isDownloading && (
                 <button
                   type="button"
                   className="btn toolbar-connect-btn"
-                  title="Abrir el portal del SRI sin iniciar la descarga"
-                  disabled={!selectedProfileId && profiles.length > 0}
-                  onClick={() => void handleOpenPortal()}
-                >
-                  <PlugZap size={15} aria-hidden="true" />
-                  Conectar
-                </button>
-              )}
-            </>
-          )}
-
-          {portalOpen && (
-            <>
-              {capturedCount > 0 && mode === 'month' && (
-                <button
-                  type="button"
-                  className="btn"
-                  style={{ height: 36 }}
                   onClick={onOpenCapturedSelector}
                 >
                   <ListChecks size={15} aria-hidden="true" />
                   Elegir archivos ({capturedCount})
                 </button>
               )}
-              <button
-                type="button"
-                className="btn btn-icon"
-                title="Recargar página del SRI"
-                aria-label="Recargar portal SRI"
-                onClick={() => void window.faktum.reloadPortal()}
-              >
-                <RefreshCw size={15} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="btn btn-icon"
-                title="Reiniciar sesión del SRI (limpiar cookies de este RUC)"
-                aria-label="Reiniciar sesión del SRI"
-                onClick={() => {
-                  if (!selectedProfileId) return;
-                  setFeedback('');
-                  void window.faktum.clearPortalSession(selectedProfileId);
-                }}
-              >
-                <LogOut size={15} aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                className="btn btn-icon"
-                title="Cerrar vista del portal SRI"
-                aria-label="Cerrar portal SRI"
-                onClick={() => void handleClosePortal()}
-              >
-                <X size={15} aria-hidden="true" />
-              </button>
-            </>
+
+              {portalOpen && (
+                <div className="toolbar-icon-group" role="group" aria-label="Controles del portal SRI">
+                  <button
+                    type="button"
+                    className="toolbar-icon-group-btn"
+                    title="Recargar página del SRI"
+                    aria-label="Recargar portal SRI"
+                    onClick={() => void window.faktum.reloadPortal()}
+                  >
+                    <RefreshCw size={15} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-icon-group-btn"
+                    title="Reiniciar sesión del SRI (limpiar cookies de este RUC)"
+                    aria-label="Reiniciar sesión del SRI"
+                    onClick={() => {
+                      if (!selectedProfileId) return;
+                      setFeedback('');
+                      void window.faktum.clearPortalSession(selectedProfileId);
+                    }}
+                  >
+                    <LogOut size={15} aria-hidden="true" />
+                  </button>
+                  <button
+                    type="button"
+                    className="toolbar-icon-group-btn is-danger"
+                    title="Cerrar vista del portal SRI"
+                    aria-label="Cerrar portal SRI"
+                    onClick={() => void handleClosePortal()}
+                  >
+                    <X size={15} aria-hidden="true" />
+                  </button>
+                </div>
+              )}
+            </div>
           )}
         </div>
+
+        {/* Row 2: Period & Document Type Filters (only visible when an account is selected) */}
+        {hasSelectedAccount && (
+          <div className="portal-toolbar-filters">
+          <div className="toolbar-inline-group">
+            <span className="toolbar-inline-label">Período</span>
+            <div className="segmented-control" role="group" aria-label="Modo de período">
+              <button
+                type="button"
+                className={mode === 'month' ? 'is-active' : ''}
+                onClick={() => handleModeChange('month')}
+              >
+                Por mes
+              </button>
+              <button
+                type="button"
+                className={mode === 'year' ? 'is-active' : ''}
+                onClick={() => handleModeChange('year')}
+              >
+                Por año
+              </button>
+              <button
+                type="button"
+                className={mode === 'range' ? 'is-active' : ''}
+                onClick={() => handleModeChange('range')}
+              >
+                Rango
+              </button>
+            </div>
+          </div>
+
+          <span className="toolbar-divider" aria-hidden="true" />
+
+          {mode === 'month' ? (
+            <>
+              <div className="toolbar-inline-group">
+                <label htmlFor="sri-year" className="toolbar-inline-label">
+                  Año
+                </label>
+                <FaktumSelect
+                  id="sri-year"
+                  name="year"
+                  minWidth={80}
+                  value={String(year)}
+                  options={years.map((y) => ({ value: String(y), label: String(y) }))}
+                  onOpenChange={handleDropdownOpenChange}
+                  onChange={(val) => setYear(Number(val))}
+                />
+              </div>
+
+              <div className="toolbar-inline-group">
+                <label htmlFor="sri-month" className="toolbar-inline-label">
+                  Mes
+                </label>
+                <FaktumSelect
+                  id="sri-month"
+                  name="month"
+                  minWidth={118}
+                  value={String(month)}
+                  options={MONTHS.map((m) => ({ value: String(m.value), label: m.label }))}
+                  onOpenChange={handleDropdownOpenChange}
+                  onChange={(val) => setMonth(Number(val))}
+                />
+              </div>
+
+              <div className="toolbar-inline-group">
+                <label htmlFor="sri-day" className="toolbar-inline-label">
+                  Día
+                </label>
+                <FaktumSelect
+                  id="sri-day"
+                  name="day"
+                  minWidth={78}
+                  value={String(day)}
+                  options={[
+                    { value: '0', label: 'Todos' },
+                    ...Array.from({ length: 31 }, (_, i) => i + 1).map((d) => ({
+                      value: String(d),
+                      label: String(d).padStart(2, '0'),
+                    })),
+                  ]}
+                  onOpenChange={handleDropdownOpenChange}
+                  onChange={(val) => setDay(Number(val))}
+                />
+              </div>
+            </>
+          ) : mode === 'year' ? (
+            <div className="toolbar-inline-group">
+              <label htmlFor="sri-year-mode" className="toolbar-inline-label">
+                Año
+              </label>
+              <FaktumSelect
+                id="sri-year-mode"
+                name="yearOnly"
+                minWidth={94}
+                value={String(year)}
+                disabled={isDownloading || rangeActive}
+                options={years.map((y) => ({ value: String(y), label: String(y) }))}
+                onOpenChange={handleDropdownOpenChange}
+                onChange={(val) => setYear(Number(val))}
+              />
+            </div>
+          ) : (
+            <>
+              <div className="toolbar-inline-group">
+                <label htmlFor="sri-from-date" className="toolbar-inline-label">
+                  Desde
+                </label>
+                <FaktumDatePicker
+                  id="sri-from-date"
+                  ariaLabel="Fecha desde"
+                  value={fromDate}
+                  rangeStart={fromDate}
+                  rangeEnd={toDate}
+                  activeEndpoint="start"
+                  disabled={isDownloading || rangeActive}
+                  onOpenChange={handleCalendarOpenChange}
+                  onChange={(nextFrom) => {
+                    setFromDate(nextFrom);
+                    if (nextFrom > toDate) {
+                      setToDate(nextFrom);
+                    }
+                  }}
+                  onSelectRange={(nextFrom, nextTo) => {
+                    setFromDate(nextFrom);
+                    setToDate(nextTo);
+                  }}
+                />
+              </div>
+
+              <div className="toolbar-inline-group">
+                <label htmlFor="sri-to-date" className="toolbar-inline-label">
+                  Hasta
+                </label>
+                <FaktumDatePicker
+                  id="sri-to-date"
+                  ariaLabel="Fecha hasta"
+                  value={toDate}
+                  rangeStart={fromDate}
+                  rangeEnd={toDate}
+                  activeEndpoint="end"
+                  disabled={isDownloading || rangeActive}
+                  onOpenChange={handleCalendarOpenChange}
+                  onChange={(nextTo) => {
+                    setToDate(nextTo);
+                    if (nextTo < fromDate) {
+                      setFromDate(nextTo);
+                    }
+                  }}
+                  onSelectRange={(nextFrom, nextTo) => {
+                    setFromDate(nextFrom);
+                    setToDate(nextTo);
+                  }}
+                />
+              </div>
+            </>
+          )}
+
+          <span className="toolbar-divider" aria-hidden="true" />
+
+            <div className="toolbar-inline-group toolbar-field-doctype">
+              <label htmlFor="sri-doctype" className="toolbar-inline-label">
+                Comprobante
+              </label>
+              <FaktumSelect
+                id="sri-doctype"
+                name="docType"
+                value={docType}
+                disabled={isDownloading || rangeActive}
+                options={SRI_PORTAL_RECIBIDOS_DOC_CODES.map((code) => ({
+                  value: code,
+                  label: SRI_DOC_TYPES[code].label,
+                }))}
+                onOpenChange={handleDropdownOpenChange}
+                onChange={setDocType}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Unified Contextual Strip: Range Strip (when in Range mode) OR Portal Banner (when in Month mode / connecting) */}
@@ -662,22 +730,15 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
             <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
               <CalendarRange size={16} aria-hidden="true" style={{ color: 'var(--brand)' }} />
               {!rangeProgress ? (
-                <span>
+                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8 }}>
                   <strong>
                     {mode === 'year'
-                      ? `Año ${year} · 12 meses`
-                      : `Rango de ${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'}`}
-                  </strong>{' '}
-                  ({effectiveRange.fromDate} → {effectiveRange.toDate}) ·{' '}
-                  {mode === 'year'
-                    ? 'Faktum descargará todos los meses del año.'
-                    : 'Elige las fechas, marca los formatos y pulsa «Descargar Facturas».'}{' '}
-                  La consulta y descarga de cada mes es automática.
-                  {portalStatus.message && (
-                    <span style={{ color: 'var(--muted)', marginLeft: 6 }}>
-                      · {portalStatus.message}
-                    </span>
-                  )}
+                      ? `Año ${year} · ${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'}`
+                      : `${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'}`}
+                  </strong>
+                  <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                    {effectiveRange.fromDate} → {effectiveRange.toDate}
+                  </span>
                 </span>
               ) : rangeProgress.active ? (
                 <>
@@ -695,14 +756,24 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
                     }`}
                   >
                     {rangeProgress.status === 'waiting_consult' ? (
-                      <>
-                        <ArrowDown size={13} aria-hidden="true" className="range-step-arrow" />
-                        <span>
-                          {rangeProgress.completedMonths > 0
-                            ? `Siguiente paso: haz clic en «Consultar» abajo en el SRI para descargar ${activeRangeMonthLabel}`
-                            : `Haz clic en «Consultar» abajo en el SRI para iniciar la descarga de ${activeRangeMonthLabel}`}
-                        </span>
-                      </>
+                      /captcha/i.test(portalStatus.message || '') ? (
+                        <>
+                          <ArrowDown size={13} aria-hidden="true" className="range-step-arrow" />
+                          <span>
+                            Escribe el CAPTCHA en el SRI; Faktum pulsará «Consultar» automáticamente y
+                            seguirá con el rango.
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <ArrowDown size={13} aria-hidden="true" className="range-step-arrow" />
+                          <span>
+                            {rangeProgress.completedMonths > 0
+                              ? `Siguiente paso: haz clic en «Consultar» abajo en el SRI para descargar ${activeRangeMonthLabel}`
+                              : `Haz clic en «Consultar» abajo en el SRI para iniciar la descarga de ${activeRangeMonthLabel}`}
+                          </span>
+                        </>
+                      )
                     ) : rangeProgress.status === 'consulting' ? (
                       <>
                         <RefreshCw size={13} aria-hidden="true" className="range-step-spin" />
@@ -716,7 +787,15 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
                     {rangeProgress.totalComprobantes} acumulados
                   </span>
                   {portalStatus.message && (
-                    <span style={{ color: 'var(--muted)', fontSize: 12 }}>
+                    <span
+                      style={{
+                        color: /captcha/i.test(portalStatus.message)
+                          ? 'var(--warn)'
+                          : 'var(--muted)',
+                        fontSize: 12,
+                        fontWeight: /captcha/i.test(portalStatus.message) ? 600 : undefined,
+                      }}
+                    >
                       {portalStatus.message}
                     </span>
                   )}
@@ -766,18 +845,6 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
                   Excel
                 </label>
               </div>
-
-              {!rangeProgress && (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-primary"
-                  disabled={(!selectedProfileId && profiles.length > 0) || !anyRangeFormat}
-                  onClick={() => void handleStartRange()}
-                >
-                  <Download size={13} aria-hidden="true" />
-                  Descargar Facturas
-                </button>
-              )}
 
               {rangeProgress?.active && (
                 <>
@@ -927,6 +994,17 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
                   Abrir carpeta
                 </button>
               )}
+              {downloadProgress.status !== 'running' && (
+                <button
+                  type="button"
+                  className="btn btn-sm"
+                  title="Ocultar aviso"
+                  aria-label="Ocultar aviso de descarga"
+                  onClick={onClearDownloadProgress}
+                >
+                  <X size={13} aria-hidden="true" />
+                </button>
+              )}
             </div>
           </div>
 
@@ -948,35 +1026,40 @@ export const PortalWorkspace: React.FC<PortalWorkspaceProps> = ({
           <div className="action-launchpad">
             <div className="launchpad-section">
               <div className="launchpad-actions-grid">
-                <button
-                  type="button"
-                  className="action-tile action-tile-primary"
-                  disabled={
-                    (!selectedProfileId && profiles.length > 0) ||
-                    (isPeriodRange && !anyRangeFormat)
-                  }
-                  onClick={() =>
-                    isPeriodRange ? void handleStartRange() : void handleDownloadMonth()
-                  }
-                >
-                  <Download size={22} aria-hidden="true" />
-                  <div>
-                    <strong>
-                      {profiles.length === 0 ? 'Agregar primer RUC' : 'Descargar Facturas'}
-                    </strong>
-                    <span>
-                      {profiles.length === 0
-                        ? 'Registra un RUC para comenzar'
-                        : !selectedProfileId
-                          ? 'Elige un RUC arriba o abajo'
-                          : isPeriodRange
-                            ? mode === 'year'
-                              ? `Año ${year} · 12 meses · ${SRI_DOC_TYPES[docType]?.label ?? 'Todos'}`
-                              : `${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'} · ${effectiveRange.fromDate} → ${effectiveRange.toDate}`
-                            : `${MONTHS.find((m) => m.value === month)?.label ?? month} ${year} · ${SRI_DOC_TYPES[docType]?.label ?? 'Todos'}`}
-                    </span>
-                  </div>
-                </button>
+                {profiles.length === 0 ? (
+                  <button
+                    type="button"
+                    className="action-tile action-tile-primary"
+                    onClick={onOpenNewProfile}
+                  >
+                    <Plus size={22} aria-hidden="true" />
+                    <div>
+                      <strong>Agregar primer RUC</strong>
+                      <span>Registra un RUC para comenzar</span>
+                    </div>
+                  </button>
+                ) : hasSelectedAccount ? (
+                  <button
+                    type="button"
+                    className="action-tile action-tile-primary"
+                    disabled={isPeriodRange && !anyRangeFormat}
+                    onClick={() =>
+                      isPeriodRange ? void handleStartRange() : void handleDownloadMonth()
+                    }
+                  >
+                    <Download size={22} aria-hidden="true" />
+                    <div>
+                      <strong>Descargar Facturas</strong>
+                      <span>
+                        {isPeriodRange
+                          ? mode === 'year'
+                            ? `Año ${year} · ${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'} · ${SRI_DOC_TYPES[docType]?.label ?? 'Factura'}`
+                            : `${rangeMonthsCount} ${rangeMonthsCount === 1 ? 'mes' : 'meses'} · ${effectiveRange.fromDate} → ${effectiveRange.toDate}`
+                          : `${MONTHS.find((m) => m.value === month)?.label ?? month} ${year} · ${SRI_DOC_TYPES[docType]?.label ?? 'Factura'}`}
+                      </span>
+                    </div>
+                  </button>
+                ) : null}
 
                 {capturedCount > 0 && mode === 'month' && (
                   <button

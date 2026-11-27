@@ -40,6 +40,11 @@ if [ ! -d "node_modules" ] || [ ! -x "node_modules/.bin/electron" ]; then
   npm install
 fi
 
+# Asegurar que el nombre e ícono en el Dock de macOS sea "Faktum"
+if [ -f "scripts/brand-mac-dev.sh" ]; then
+  bash scripts/brand-mac-dev.sh >/dev/null 2>&1 || true
+fi
+
 # Modo desarrollo opcional si se ejecuta con --dev
 if [[ "${1:-}" == "--dev" ]]; then
   echo "🛠️  Iniciando en modo desarrollo..."

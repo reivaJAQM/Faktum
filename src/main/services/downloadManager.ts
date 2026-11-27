@@ -303,6 +303,18 @@ export class DownloadManager {
             ambiente: authAmbiente,
           });
 
+          // Never silently overwrite another comprobante or miscount if SRI returned a mismatched XML
+          if (parsed.claveAcceso && parsed.claveAcceso !== clave) {
+            state.failed++;
+            state.processed++;
+            state.errors.push({
+              claveAcceso: clave,
+              reason: `El SRI devolvió un XML distinto (${parsed.claveAcceso.slice(-12)}) al solicitado.`,
+            });
+            emit();
+            continue;
+          }
+
           const paths = buildComprobantePaths({
             outputDir: settings.outputDir,
             ownerRuc: profile.ruc,

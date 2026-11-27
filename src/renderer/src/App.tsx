@@ -46,7 +46,7 @@ export const App: React.FC = () => {
   const [portalStatus, setPortalStatus] = useState<PortalStatusEvent>({
     state: 'idle',
     url: '',
-    message: 'Selecciona un RUC y haz clic en «Conectar al SRI» para comenzar.',
+    message: '',
   });
   const [downloadProgress, setDownloadProgress] = useState<DownloadProgressEvent | null>(null);
   const [rangeProgress, setRangeProgress] = useState<RangeProgressEvent | null>(null);
@@ -117,6 +117,13 @@ export const App: React.FC = () => {
 
   const anyModalOpen = profileModalOpen || confirmModalOpen || selectorModalOpen;
 
+  // Clear stale completed download/range banners and captured list when switching to another RUC
+  useEffect(() => {
+    setDownloadProgress((prev) => (prev && prev.status === 'running' ? prev : null));
+    setRangeProgress((prev) => (prev && prev.active ? prev : null));
+    setCapturedBatch((prev) => (prev && prev.profileId === selectedProfileId ? prev : null));
+  }, [selectedProfileId]);
+
   const activeComprobantes = selectedProfileId
     ? comprobantes.filter((c) => c.profileId === selectedProfileId)
     : [];
@@ -174,7 +181,6 @@ export const App: React.FC = () => {
             <source media="(prefers-color-scheme: dark)" srcSet={wordmarkDark} />
             <img src={wordmarkLight} alt="Faktum" className="brand-wordmark" />
           </picture>
-          <span className="brand-subtitle">SRI Masivo · v1.0</span>
         </div>
 
         <nav className="nav-list">
@@ -241,6 +247,7 @@ export const App: React.FC = () => {
             onOpenNewProfile={handleOpenNewProfile}
             portalStatus={portalStatus}
             downloadProgress={downloadProgress}
+            onClearDownloadProgress={() => setDownloadProgress(null)}
             rangeProgress={rangeProgress}
             onClearRangeProgress={() => setRangeProgress(null)}
             defaultFormats={{

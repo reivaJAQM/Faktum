@@ -9,8 +9,13 @@ export interface YearMonth {
 /**
  * Expands an inclusive ISO date range (YYYY-MM-DD .. YYYY-MM-DD) into an ordered list
  * of { year, month } periods to query in the SRI portal.
+ * When `maxDate` is provided, future months strictly after `maxDate`'s year/month are discarded.
  */
-export function expandMonthsInRange(fromIso: string, toIso: string): YearMonth[] {
+export function expandMonthsInRange(
+  fromIso: string,
+  toIso: string,
+  maxDate?: Date
+): YearMonth[] {
   const m1 = fromIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   const m2 = toIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
   if (!m1 || !m2) return [];
@@ -23,6 +28,18 @@ export function expandMonthsInRange(fromIso: string, toIso: string): YearMonth[]
   if (startY > endY || (startY === endY && startM > endM)) {
     [startY, endY] = [endY, startY];
     [startM, endM] = [endM, startM];
+  }
+
+  if (maxDate) {
+    const maxY = maxDate.getFullYear();
+    const maxM = maxDate.getMonth() + 1;
+    if (startY > maxY || (startY === maxY && startM > maxM)) {
+      return [];
+    }
+    if (endY > maxY || (endY === maxY && endM > maxM)) {
+      endY = maxY;
+      endM = maxM;
+    }
   }
 
   const months: YearMonth[] = [];

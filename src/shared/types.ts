@@ -10,6 +10,12 @@ export const SRI_DOC_TYPES: Record<string, { code: SriDocCode; label: string; fo
   '07': { code: '07', label: 'Comprobante de Retención', folder: 'Retenciones', sriSelectValue: '6' },
 };
 
+/**
+ * Exact document types offered by the SRI "Comprobantes electrónicos recibidos" dropdown.
+ * (`ALL` and `06` Guía de Remisión are kept in `SRI_DOC_TYPES` for History filtering and XML parsing.)
+ */
+export const SRI_PORTAL_RECIBIDOS_DOC_CODES = ['01', '03', '04', '05', '07'] as const;
+
 export interface RucProfile {
   id: string;
   ruc: string;

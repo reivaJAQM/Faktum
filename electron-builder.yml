@@ -6,6 +6,7 @@ directories:
 files:
   - dist/**/*
   - build/icon.png
+  - build/icon.ico
   - package.json
 mac:
   icon: build/icon.icns
@@ -17,12 +18,19 @@ mac:
 win:
   icon: build/icon.ico
   target:
-    - nsis
-    - portable
-  artifactName: Faktum-${version}-${arch}.${ext}
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
 nsis:
+  artifactName: Faktum-Setup-${version}-${arch}.${ext}
   oneClick: false
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: Faktum
+  uninstallDisplayName: Faktum
+portable:
+  artifactName: Faktum-Portable-${version}-${arch}.${ext}

@@ -24,6 +24,7 @@ import type { FaktumStore } from './store';
 
 interface PendingNativeDocDownload {
   kind: 'pdf' | 'xml';
+  expectedClave?: string;
   resolve: (res: { ok: boolean; buffer?: Buffer; reason?: string }) => void;
   timer: NodeJS.Timeout;
 }
@@ -109,6 +110,8 @@ export class SriPortalManager {
     resolve: () => void;
   }> = [];
   private lastActiveTablePage = 1;
+  private lastReportKeysCount = 0;
+  private rowPageCache = new Map<string, number>();
   private preferNativeClick = false;
   private pendingNativeDocDownload: PendingNativeDocDownload | null = null;
   private lastPortalDocFetchAt = 0;
@@ -121,6 +124,18 @@ export class SriPortalManager {
   private awaitingMonthConsult = false;
   private monthConsultPreSignature = '';
   private monthConsultAt = 0;
+  private rangeCaptchaPaused = false;
+  private monthCaptchaPaused = false;
+  private captchaLastSubmittedValue = '';
+  private captchaNoticeKey = '';
+  private captchaRetryDone = false;
+  private captchaRetrying = false;
+  private consultRecoveryAttempts = 0;
+  private consultRecoveryInFlight = false;
+  private consultRecoveryNextWaitMs = 15000;
+  private preserveConsultRecoveryOnNextClick = false;
+  private stuckDiagLogged = false;
+  private rangeTransitionUntil = 0;
   private readonly traceLogPath: string;
 
   constructor(
@@ -149,6 +164,13 @@ export class SriPortalManager {
 
   private emitStatus(event: PortalStatusEvent) {
     this.onPortalStatus(event);
+  }
+
+  private resetConsultRecovery(): void {
+    this.consultRecoveryAttempts = 0;
+    this.consultRecoveryNextWaitMs = 15000;
+    this.preserveConsultRecoveryOnNextClick = false;
+    this.stuckDiagLogged = false;
   }
 
   private async safeLoadUrl(url: string): Promise<void> {
@@ -180,6 +202,13 @@ export class SriPortalManager {
     this.menuNavInFlight = false;
     this.pendingMonthConsult = false;
     this.awaitingMonthConsult = false;
+    this.rangeCaptchaPaused = false;
+    this.monthCaptchaPaused = false;
+    this.captchaLastSubmittedValue = '';
+    this.captchaNoticeKey = '';
+    this.captchaRetryDone = false;
+    this.captchaRetrying = false;
+    this.resetConsultRecovery();
 
     this.trace('OPEN_PORTAL', `ruc=${profileData.profile.ruc} hasPass=${profileData.profile.hasPassword}`);
 
@@ -223,13 +252,24 @@ export class SriPortalManager {
     if (!profileData) {
       return { ok: false, message: 'Selecciona un perfil de RUC válido antes de iniciar el rango.' };
     }
-    const months = expandMonthsInRange(req.fromDate, req.toDate);
+    const now = new Date();
+    const todayIso = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    const [rawFrom, rawTo] =
+      req.fromDate <= req.toDate ? [req.fromDate, req.toDate] : [req.toDate, req.fromDate];
+
+    if (rawFrom > todayIso) {
+      return {
+        ok: false,
+        message: 'El período seleccionado corresponde a meses futuros que aún no están disponibles en el SRI.',
+      };
+    }
+
+    const fromDate = rawFrom;
+    const toDate = rawTo > todayIso ? todayIso : rawTo;
+    const months = expandMonthsInRange(fromDate, toDate, now);
     if (months.length === 0) {
       return { ok: false, message: 'El rango de fechas seleccionado no es válido.' };
     }
-
-    const [fromDate, toDate] =
-      req.fromDate <= req.toDate ? [req.fromDate, req.toDate] : [req.toDate, req.fromDate];
 
     this.activeRange = {
       profileId: profileData.profile.id,
@@ -244,6 +284,7 @@ export class SriPortalManager {
       completedMonths: 0,
       collected: new Map<string, ParsedComprobante>(),
     };
+    this.rangeTransitionUntil = Date.now() + 5000;
 
     const first = months[0];
     const firstFilter: SriQueryFilter = {
@@ -259,6 +300,13 @@ export class SriPortalManager {
     this.autoConsultMonthKey = '';
     this.autoConsultClickedAt = 0;
     this.rangeAdvanceInFlight = false;
+    this.rangeCaptchaPaused = false;
+    this.monthCaptchaPaused = false;
+    this.captchaLastSubmittedValue = '';
+    this.captchaNoticeKey = '';
+    this.captchaRetryDone = false;
+    this.captchaRetrying = false;
+    this.resetConsultRecovery();
     this.emitRangeProgress('waiting_consult');
 
     if (this.view && this.currentPartition === partition && this.isOnRecibidosPage()) {
@@ -291,6 +339,11 @@ export class SriPortalManager {
     this.currentFilter = filter;
     this.awaitingMonthConsult = false;
     this.pendingMonthConsult = false;
+    this.monthCaptchaPaused = false;
+    this.captchaLastSubmittedValue = '';
+    this.captchaRetryDone = false;
+    this.captchaRetrying = false;
+    this.resetConsultRecovery();
 
     if (this.view && this.currentPartition === partition && this.isOnRecibidosPage()) {
       this.setBounds(bounds, true);
@@ -332,6 +385,17 @@ export class SriPortalManager {
 
     if (res.clicked) {
       this.awaitingMonthConsult = true;
+      this.monthCaptchaPaused = false;
+      this.captchaLastSubmittedValue = res.captchaValue ?? '';
+      this.captchaRetryDone = false;
+      this.captchaRetrying = false;
+      if (this.preserveConsultRecoveryOnNextClick) {
+        this.preserveConsultRecoveryOnNextClick = false;
+        this.consultRecoveryNextWaitMs = 15000;
+        this.stuckDiagLogged = false;
+      } else {
+        this.resetConsultRecovery();
+      }
       this.monthConsultPreSignature = res.signature ?? '';
       this.monthConsultAt = Date.now();
       this.emitStatus({
@@ -342,12 +406,22 @@ export class SriPortalManager {
       return;
     }
 
+    if (res.captcha) {
+      this.monthCaptchaPaused = true;
+      this.captchaLastSubmittedValue = '';
+      this.monthConsultAt = Date.now();
+      this.emitStatus({
+        state: 'consult_ready',
+        url: this.view.webContents.getURL(),
+        message: `El SRI pidió un CAPTCHA para ${mLabel} ${filter.year}. Escribe el código y Faktum pulsará «Consultar» automáticamente. Si es reCAPTCHA, márcalo y pulsa «Consultar».`,
+      });
+      return;
+    }
+
     this.emitStatus({
       state: 'consult_ready',
       url: this.view.webContents.getURL(),
-      message: res.captcha
-        ? `El SRI pidió un CAPTCHA para consultar ${mLabel} ${filter.year}. Complétalo y pulsa «Consultar».`
-        : `Haz clic en «Consultar» en el SRI para descargar ${mLabel} ${filter.year}.`,
+      message: `Haz clic en «Consultar» en el SRI para descargar ${mLabel} ${filter.year}.`,
     });
   }
 
@@ -404,11 +478,12 @@ export class SriPortalManager {
     }
   }
 
-  private async clickConsultar(): Promise<{
+  private async clickConsultar(force = false): Promise<{
     clicked: boolean;
     captcha?: boolean;
     reason?: string;
     signature?: string;
+    captchaValue?: string;
   }> {
     if (!this.view || !this.isOnRecibidosPage()) {
       return { clicked: false, reason: 'not_on_recibidos' };
@@ -416,6 +491,7 @@ export class SriPortalManager {
     try {
       const result = await this.view.webContents.executeJavaScript(`
         (() => {
+          const force = ${JSON.stringify(force)};
           const norm = (s) => (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
           const scope = document.querySelector('#frmPrincipal') || document;
           const visible = (el) => {
@@ -431,11 +507,20 @@ export class SriPortalManager {
               (el) => norm(el.value || el.textContent) === 'consultar'
             );
 
+          // Only real CAPTCHA widgets (avoids false positives from unrelated "código" fields).
           const captchaInput = document.querySelector(
-            '#frmPrincipal input[id*="captcha" i], input[id*="captcha" i][type="text"], input[name*="captcha" i]'
+            '#frmPrincipal input[id*="captcha" i], input[id*="captcha" i][type="text"], ' +
+            'input[name*="captcha" i], input[placeholder*="captcha" i], input[aria-label*="captcha" i]'
           );
-          const captchaImg = document.querySelector('img[src*="captcha" i], img[id*="captcha" i]');
-          const hasCaptcha = visible(captchaInput) || visible(captchaImg);
+          const captchaImg = document.querySelector(
+            'img[src*="captcha" i], img[id*="captcha" i], img[src*="kaptcha" i], img[src*="jcaptcha" i]'
+          );
+          const captchaValue =
+            captchaInput && 'value' in captchaInput ? String(captchaInput.value || '').trim() : '';
+          // Require both the text field AND the image: that is a genuine CAPTCHA to solve.
+          const captchaKind =
+            visible(captchaInput) && visible(captchaImg) ? 'input_image' : '';
+          const hasCaptchaWidget = Boolean(captchaKind);
 
           // Snapshot the table currently on screen so we can detect when the new query result arrives.
           const rows = document.querySelectorAll('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr');
@@ -447,7 +532,16 @@ export class SriPortalManager {
             : '';
 
           if (!visible(btn)) return { clicked: false, reason: 'no_button', signature };
-          if (hasCaptcha) return { clicked: false, captcha: true, reason: 'captcha', signature };
+          // A visible CAPTCHA widget only blocks the click while its text field is still empty.
+          if (!force && hasCaptchaWidget && !captchaValue) {
+            return {
+              clicked: false,
+              captcha: true,
+              reason: 'captcha_' + captchaKind,
+              signature,
+              captchaValue,
+            };
+          }
 
           const disabled =
             btn.disabled ||
@@ -456,7 +550,13 @@ export class SriPortalManager {
           if (disabled) return { clicked: false, reason: 'disabled', signature };
 
           btn.click();
-          return { clicked: true, signature, id: btn.id || btn.getAttribute('name') || '' };
+          return {
+            clicked: true,
+            signature,
+            id: btn.id || btn.getAttribute('name') || '',
+            captcha: hasCaptchaWidget,
+            captchaValue,
+          };
         })();
       `);
       return result ?? { clicked: false, reason: 'unknown' };
@@ -503,6 +603,15 @@ export class SriPortalManager {
 
     if (res.clicked) {
       this.autoConsultClickedAt = Date.now();
+      this.rangeCaptchaPaused = false;
+      this.captchaLastSubmittedValue = res.captchaValue ?? '';
+      if (this.preserveConsultRecoveryOnNextClick) {
+        this.preserveConsultRecoveryOnNextClick = false;
+        this.consultRecoveryNextWaitMs = 15000;
+        this.stuckDiagLogged = false;
+      } else {
+        this.resetConsultRecovery();
+      }
       this.emitRangeProgress('consulting');
       this.emitStatus({
         state: 'downloading',
@@ -512,18 +621,327 @@ export class SriPortalManager {
       return;
     }
 
+    if (res.captcha) {
+      // Keep the month reservation so repeated page loads don't auto-click into the CAPTCHA again.
+      this.pauseRangeForCaptcha();
+      return;
+    }
+
     // Could not click: release the reservation so a later load/manual action can retry.
     if (this.autoConsultMonthKey === key) this.autoConsultMonthKey = '';
 
-    // Fallback: leave the manual «Consultar» step available (e.g. CAPTCHA requested by SRI).
+    // Fallback: leave the manual «Consultar» step available.
     this.emitRangeProgress('waiting_consult');
     this.emitStatus({
       state: 'consult_ready',
       url: this.view.webContents.getURL(),
-      message: res.captcha
-        ? `Mes ${r.currentIndex + 1} de ${r.months.length} (${mLabel} ${cur.year}): el SRI pidió un CAPTCHA. Complétalo y pulsa «Consultar» para continuar con el rango.`
-        : `Mes ${r.currentIndex + 1} de ${r.months.length} (${mLabel} ${cur.year}) listo. Haz clic en «Consultar» en el SRI para continuar.`,
+      message: `Mes ${r.currentIndex + 1} de ${r.months.length} (${mLabel} ${cur.year}) listo. Haz clic en «Consultar» en el SRI para continuar.`,
     });
+  }
+
+  private pauseRangeForCaptcha(): void {
+    const r = this.activeRange;
+    if (!r || !this.view) return;
+    const cur = r.months[Math.min(r.currentIndex, r.months.length - 1)];
+    const mLabel = cur ? MONTH_LABELS_ES[cur.month - 1] ?? String(cur.month) : '';
+    const wasPaused = this.rangeCaptchaPaused;
+
+    this.rangeCaptchaPaused = true;
+    this.autoConsultClickedAt = 0;
+    this.emitRangeProgress('waiting_consult');
+    if (wasPaused) return;
+
+    this.emitStatus({
+      state: 'consult_ready',
+      url: this.view.webContents.getURL(),
+      message: `El SRI pidió un CAPTCHA para ${mLabel} ${cur?.year ?? ''}. Escribe el código y Faktum pulsará «Consultar» automáticamente. Si es reCAPTCHA, márcalo y pulsa «Consultar»; el rango continuará solo.`,
+    });
+  }
+
+  private pauseMonthForCaptcha(): void {
+    if (!this.view) return;
+    const wasPaused = this.monthCaptchaPaused;
+    this.monthCaptchaPaused = true;
+    this.awaitingMonthConsult = false;
+    if (wasPaused) return;
+    this.emitStatus({
+      state: 'consult_ready',
+      url: this.view.webContents.getURL(),
+      message:
+        'El SRI pidió un CAPTCHA. Escribe el código y Faktum pulsará «Consultar» automáticamente. Si es reCAPTCHA, márcalo y pulsa «Consultar»; la descarga continuará sola.',
+    });
+  }
+
+  private async tracePageDiagnostics(tag: string): Promise<void> {
+    if (!this.view) {
+      this.trace(tag, 'no_view');
+      return;
+    }
+    try {
+      const info = await this.view.webContents.executeJavaScript(`
+        (() => {
+          const visible = (el) => {
+            if (!el) return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          };
+          const short = (v) => String(v || '').slice(0, 60);
+          const inputs = Array.from(document.querySelectorAll('#frmPrincipal input, form input'))
+            .filter((el) => el.type !== 'password')
+            .map((el) => ({
+              id: el.id || '',
+              name: el.getAttribute('name') || '',
+              type: el.type || '',
+              value: short(el.value),
+              visible: visible(el),
+            }))
+            .filter((x) => x.id || x.name)
+            .slice(0, 30);
+          const selects = Array.from(document.querySelectorAll('#frmPrincipal select, form select'))
+            .map((el) => ({ id: el.id || '', name: el.getAttribute('name') || '', value: short(el.value) }))
+            .slice(0, 12);
+          const imgs = Array.from(document.querySelectorAll('img'))
+            .filter(visible)
+            .map((el) => ({ id: el.id || '', src: short(el.getAttribute('src')) }))
+            .slice(0, 15);
+          const iframes = Array.from(document.querySelectorAll('iframe'))
+            .filter(visible)
+            .map((el) => ({ src: short(el.getAttribute('src')) }))
+            .slice(0, 10);
+          const rows = document.querySelectorAll('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr');
+          const msgEls = Array.from(document.querySelectorAll(
+            '.ui-messages-error-summary, .ui-messages-error-detail, .ui-message-error-detail, .ui-growl-title, .ui-growl-message'
+          ));
+          const messages = Array.from(
+            new Set(msgEls.map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim()).filter(Boolean))
+          ).slice(0, 5);
+          return {
+            url: location.href.split('?')[0],
+            rows: rows.length,
+            firstRow: (rows[0]?.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 120),
+            inputs,
+            selects,
+            imgs,
+            iframes,
+            messages,
+          };
+        })();
+      `);
+      this.trace(tag, JSON.stringify(info).slice(0, 1800));
+    } catch (err) {
+      this.trace(tag, 'diag_error: ' + (err instanceof Error ? err.message : String(err)));
+    }
+  }
+
+  private async isCaptchaVisibleOnPage(): Promise<boolean> {
+    if (!this.view || !this.isOnRecibidosPage()) return false;
+    try {
+      const visible = await this.execJsWithTimeout<boolean>(
+        `
+        (() => {
+          const isVis = (el) => {
+            if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+            const rect = el.getBoundingClientRect();
+            return rect.width > 0 && rect.height > 0;
+          };
+          const captchaInput = document.querySelector(
+            '#frmPrincipal input[id*="captcha" i], input[id*="captcha" i][type="text"], ' +
+            'input[name*="captcha" i], input[placeholder*="captcha" i], input[aria-label*="captcha" i]'
+          );
+          const captchaImg = document.querySelector(
+            'img[src*="captcha" i], img[id*="captcha" i], img[src*="kaptcha" i], img[src*="jcaptcha" i]'
+          );
+          return Boolean(isVis(captchaInput) && isVis(captchaImg));
+        })();
+        `,
+        4000,
+        'captcha-check'
+      );
+      return Boolean(visible);
+    } catch {
+      return false;
+    }
+  }
+
+  private async checkConsultWatchdog(): Promise<void> {
+    if (this.consultRecoveryInFlight) return;
+    const now = Date.now();
+    const waitMs = this.consultRecoveryNextWaitMs;
+    const rangeStuck =
+      Boolean(this.activeRange) && this.autoConsultClickedAt > 0 && now - this.autoConsultClickedAt > waitMs;
+    const monthStuck =
+      !this.activeRange && this.awaitingMonthConsult && now - this.monthConsultAt > waitMs;
+    if (!rangeStuck && !monthStuck) return;
+    if (this.rangeCaptchaPaused || this.monthCaptchaPaused) return;
+    if (this.downloadManager.isBusy()) return;
+
+    if (!this.stuckDiagLogged) {
+      this.stuckDiagLogged = true;
+      await this.tracePageDiagnostics('CONSULT_STUCK_DIAG');
+    }
+    await this.recoverStuckConsult(rangeStuck ? 'range' : 'month');
+  }
+
+  private async recoverStuckConsult(kind: 'range' | 'month'): Promise<void> {
+    if (!this.view) return;
+    if (this.consultRecoveryInFlight) return;
+    this.consultRecoveryInFlight = true;
+
+    try {
+      const prepareActiveTarget = () => {
+        if (kind === 'range' && this.activeRange) {
+          const r = this.activeRange;
+          const cur = r.months[Math.min(r.currentIndex, r.months.length - 1)];
+          if (cur) {
+            this.currentFilter = {
+              profileId: r.profileId,
+              year: cur.year,
+              month: cur.month,
+              day: 0,
+              docType: r.docType,
+            };
+          }
+          this.autoConsultMonthKey = '';
+          this.autoConsultClickedAt = Date.now();
+          this.rangeTransitionUntil = Date.now() + 3000;
+          this.emitRangeProgress('consulting');
+        } else if (kind === 'month' && !this.activeRange) {
+          this.pendingMonthConsult = true;
+          this.awaitingMonthConsult = true;
+          this.monthConsultAt = Date.now();
+          this.monthConsultPreSignature = '';
+        }
+      };
+
+      // Stage 1: Fast in-place retry (re-apply filters + click «Consultar» again).
+      if (this.consultRecoveryAttempts === 0) {
+        this.consultRecoveryAttempts = 1;
+        this.trace('CONSULT_WATCHDOG', `${kind} retry=1 action=reclick`);
+        try {
+          if (kind === 'range' && this.activeRange) {
+            const r = this.activeRange;
+            const cur = r.months[Math.min(r.currentIndex, r.months.length - 1)];
+            if (cur) {
+              await this.applyFilters(
+                { profileId: r.profileId, year: cur.year, month: cur.month, day: 0, docType: r.docType },
+                true
+              );
+            }
+          } else if (this.currentFilter) {
+            await this.applyFilters(this.currentFilter, true);
+          }
+        } catch {
+          // ignore and try clicking anyway
+        }
+
+        // Non-forced: if a genuine CAPTCHA is now on screen, pause and let the user solve it.
+        const res = await this.clickConsultar(false);
+        if (res.captcha) {
+          this.trace('CAPTCHA_REQUIRED', `${kind} via watchdog`);
+          this.resetConsultRecovery();
+          if (kind === 'range') this.pauseRangeForCaptcha();
+          else this.pauseMonthForCaptcha();
+          return;
+        }
+        if (res.clicked) {
+          this.consultRecoveryNextWaitMs = 15000;
+          if (kind === 'range' && this.activeRange) {
+            this.autoConsultClickedAt = Date.now();
+            this.emitRangeProgress('consulting');
+          } else if (kind === 'month' && !this.activeRange) {
+            this.awaitingMonthConsult = true;
+            this.monthConsultAt = Date.now();
+            this.monthConsultPreSignature = res.signature ?? '';
+          }
+          this.emitStatus({
+            state: 'downloading',
+            url: this.view.webContents.getURL(),
+            message: 'El SRI tardó en responder; reintentando la consulta automáticamente (1/3)...',
+          });
+          return;
+        }
+        // Button missing/disabled or page drifted: fall through directly to Stage 2 (reload).
+      }
+
+      // Never reload over a genuine CAPTCHA waiting for the user.
+      if (this.isOnRecibidosPage() && (await this.isCaptchaVisibleOnPage())) {
+        this.trace('CAPTCHA_REQUIRED', `${kind} via watchdog pre-reload`);
+        this.resetConsultRecovery();
+        if (kind === 'range') this.pauseRangeForCaptcha();
+        else this.pauseMonthForCaptcha();
+        return;
+      }
+
+      // Stage 2: Reload the SRI page ignoring cache to get a fresh JSF ViewState while preserving range progress.
+      if (this.consultRecoveryAttempts < 2 && this.isOnRecibidosPage()) {
+        this.consultRecoveryAttempts = 2;
+        this.preserveConsultRecoveryOnNextClick = true;
+        this.consultRecoveryNextWaitMs = 25000;
+        this.stuckDiagLogged = false;
+        this.lastAutoCapturedSignature = '';
+        this.hasNavigatedFromProfile = false;
+        this.hasAttemptedAutoLogin = false;
+        this.menuNavInFlight = false;
+        prepareActiveTarget();
+
+        const currentUrl = this.view.webContents.getURL();
+        this.trace('CONSULT_WATCHDOG', `${kind} retry=2 action=reload url=${sanitizeUrlForLog(currentUrl)}`);
+        this.emitStatus({
+          state: 'loading',
+          url: currentUrl,
+          message: 'El SRI se quedó sin responder; recargando la página y reintentando automáticamente (2/3)...',
+        });
+        this.view.webContents.reloadIgnoringCache();
+        return;
+      }
+
+      // Stage 3: Full portal re-entry via SRI_PORTAL_ENTRY_URL to obtain a fresh SSO token / JSF session.
+      if (this.consultRecoveryAttempts < 3) {
+        this.consultRecoveryAttempts = 3;
+        this.preserveConsultRecoveryOnNextClick = true;
+        this.consultRecoveryNextWaitMs = 35000;
+        this.stuckDiagLogged = false;
+        this.lastAutoCapturedSignature = '';
+        this.hasNavigatedFromProfile = false;
+        this.hasAttemptedAutoLogin = false;
+        this.menuNavInFlight = false;
+        prepareActiveTarget();
+
+        this.trace('CONSULT_WATCHDOG', `${kind} retry=3 action=reenter_portal`);
+        this.emitStatus({
+          state: 'loading',
+          url: SRI_PORTAL_ENTRY_URL,
+          message: 'Reiniciando la vista del SRI para retomar la consulta automáticamente (3/3)...',
+        });
+        await this.safeLoadUrl(SRI_PORTAL_ENTRY_URL);
+        return;
+      }
+
+      // Exhausted automatic recovery: hand control cleanly back to the user.
+      this.resetConsultRecovery();
+      if (kind === 'range') {
+        this.autoConsultClickedAt = 0;
+        this.emitRangeProgress('waiting_consult');
+        this.emitStatus({
+          state: 'error',
+          url: this.view.webContents.getURL(),
+          message:
+            'El SRI no respondió tras recargar automáticamente. Revisa el portal y pulsa «Consultar» manualmente; el rango continuará después.',
+        });
+      } else {
+        this.awaitingMonthConsult = false;
+        this.pendingMonthConsult = false;
+        this.emitStatus({
+          state: 'error',
+          url: this.view.webContents.getURL(),
+          message: 'El SRI no respondió tras recargar automáticamente. Pulsa «Consultar» manualmente en el portal.',
+        });
+      }
+    } finally {
+      this.consultRecoveryInFlight = false;
+    }
   }
 
   public async cancelDateRange(): Promise<void> {
@@ -536,6 +954,9 @@ export class SriPortalManager {
     const r = this.activeRange;
     if (!r) return;
 
+    // Block stale-table / pagination captures while we move to the next month and click Consultar.
+    this.rangeTransitionUntil = Date.now() + 5000;
+
     if (r.currentIndex >= r.months.length) {
       await this.finalizeRange('completed');
       return;
@@ -543,6 +964,14 @@ export class SriPortalManager {
 
     const next = r.months[r.currentIndex];
     const mLabel = MONTH_LABELS_ES[next.month - 1] ?? String(next.month);
+    // Fresh month: clear CAPTCHA pause/retry bookkeeping so a new challenge can be handled.
+    this.rangeCaptchaPaused = false;
+    this.monthCaptchaPaused = false;
+    this.captchaLastSubmittedValue = '';
+    this.captchaNoticeKey = '';
+    this.captchaRetryDone = false;
+    this.captchaRetrying = false;
+    this.resetConsultRecovery();
     // CRITICAL: Do NOT clear lastAutoCapturedSignature here!
     // Changing the SRI <select> dropdowns leaves the previous month's table visible on screen
     // until the user actually clicks «Consultar». Keeping the previous signature prevents pollTimer
@@ -599,6 +1028,7 @@ export class SriPortalManager {
     });
 
     this.activeRange = null;
+    this.rangeTransitionUntil = 0;
   }
 
   public async clearSession(profileId: string): Promise<void> {
@@ -646,6 +1076,13 @@ export class SriPortalManager {
     this.activeRange = null;
     this.pendingMonthConsult = false;
     this.awaitingMonthConsult = false;
+    this.rangeCaptchaPaused = false;
+    this.monthCaptchaPaused = false;
+    this.captchaLastSubmittedValue = '';
+    this.captchaNoticeKey = '';
+    this.captchaRetryDone = false;
+    this.captchaRetrying = false;
+    this.resetConsultRecovery();
     this.destroyView();
     this.emitStatus({
       state: 'idle',
@@ -658,7 +1095,28 @@ export class SriPortalManager {
     if (!this.view) return;
     this.lastAutoCapturedSignature = '';
     this.hasNavigatedFromProfile = false;
-    this.view.webContents.reload();
+    this.autoConsultMonthKey = '';
+    this.resetConsultRecovery();
+    if (this.activeRange) {
+      const r = this.activeRange;
+      const cur = r.months[Math.min(r.currentIndex, r.months.length - 1)];
+      if (cur) {
+        this.currentFilter = {
+          profileId: r.profileId,
+          year: cur.year,
+          month: cur.month,
+          day: 0,
+          docType: r.docType,
+        };
+      }
+      this.autoConsultClickedAt = Date.now();
+      this.consultRecoveryNextWaitMs = 25000;
+    } else if (this.awaitingMonthConsult) {
+      this.pendingMonthConsult = true;
+      this.monthConsultAt = Date.now();
+      this.consultRecoveryNextWaitMs = 25000;
+    }
+    this.view.webContents.reloadIgnoringCache();
   }
 
   private destroyView(): void {
@@ -750,6 +1208,16 @@ export class SriPortalManager {
                 });
                 return;
               }
+              if (pending.expectedClave && pending.expectedClave.length === 49) {
+                const fullXml = buffer.toString('utf-8');
+                if (!fullXml.includes(pending.expectedClave)) {
+                  pending.resolve({
+                    ok: false,
+                    reason: 'El XML descargado del SRI corresponde a otro comprobante.',
+                  });
+                  return;
+                }
+              }
             }
 
             pending.resolve({ ok: true, buffer });
@@ -772,7 +1240,7 @@ export class SriPortalManager {
         this.emitStatus({
           state: 'downloading',
           url: this.view?.webContents.getURL() ?? '',
-          message: 'Reporte capturado automáticamente del SRI. Leyendo claves de acceso...',
+          message: '',
         });
 
         item.once('done', async (_doneEvent, state) => {
@@ -791,6 +1259,8 @@ export class SriPortalManager {
             const entries = extractKeysFromReportText(text);
             this.preferNativeClick = false;
             this.lastActiveTablePage = 1;
+            this.lastReportKeysCount = entries.length;
+            this.rowPageCache.clear();
             this.trace('REPORT_PARSED', `keys=${entries.length}`);
 
             try {
@@ -823,6 +1293,7 @@ export class SriPortalManager {
 
   private async deliverCapturedBatch(entries: CapturedKeyEntry[]): Promise<void> {
     if (!this.currentFilter) return;
+    this.resetConsultRecovery();
 
     // Multi-month Date Range Mode: filter to exact [fromDate, toDate], download this month's XML + original SRI PDF right away, and advance automatically!
     if (this.activeRange) {
@@ -1021,6 +1492,9 @@ export class SriPortalManager {
 
     this.pollTimer = setInterval(() => {
       if (!this.view || !this.isVisible || this.downloadManager.isBusy()) return;
+      // Runs regardless of the current URL so a query can never get stuck silently
+      // (e.g. if the SRI navigated away or the results check stopped running).
+      void this.checkConsultWatchdog();
       const url = this.view.webContents.getURL();
       if (this.isRecibidosUrl(url)) {
         void this.checkForResultsInDom();
@@ -1179,6 +1653,9 @@ export class SriPortalManager {
           message: 'Ingresando automáticamente al SRI con tus credenciales guardadas...',
         });
       } else {
+        // Pause auto-consult watchdog while waiting for manual login (activeRange/pendingMonthConsult remain armed)
+        this.autoConsultClickedAt = 0;
+        this.awaitingMonthConsult = false;
         this.emitStatus({
           state: 'login_ready',
           url,
@@ -1316,11 +1793,31 @@ export class SriPortalManager {
     }
     if (!this.view) return { ok: false, message: 'El portal del SRI no está abierto.' };
 
-    const docMeta = SRI_DOC_TYPES[filter.docType] ?? SRI_DOC_TYPES.ALL;
+    const docMeta = SRI_DOC_TYPES[filter.docType] ?? SRI_DOC_TYPES['01'];
+    const docKeywordsMap: Record<string, string[]> = {
+      '01': ['factura'],
+      '03': ['liquidacion de compra', 'liquidacion'],
+      '04': ['notas de credito', 'nota de credito', 'credito'],
+      '05': ['notas de debito', 'nota de debito', 'debito'],
+      '06': ['guia de remision', 'remision'],
+      '07': ['comprobante de retencion', 'retencion'],
+      ALL: ['todos'],
+    };
+    const docKeywords = docKeywordsMap[filter.docType] ?? [docMeta.label];
 
     try {
       const applied = await this.view.webContents.executeJavaScript(`
         (() => {
+          const norm = (s) => (s || '').normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
+          const setSelectOption = (el, match) => {
+            const opts = Array.from(el.options);
+            const idx = opts.indexOf(match);
+            if (idx >= 0) el.selectedIndex = idx;
+            el.value = match.value;
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+          };
+
           const selectByMatch = (selectors, targetVal, targetText) => {
             for (const sel of selectors) {
               const el = document.querySelector(sel);
@@ -1328,36 +1825,87 @@ export class SriPortalManager {
               const opts = Array.from(el.options);
               let match = opts.find((o) => o.value === String(targetVal));
               if (!match && targetText) {
-                const norm = (s) => s.normalize('NFD').replace(/[\\u0300-\\u036f]/g, '').toLowerCase().trim();
                 match = opts.find((o) => norm(o.textContent || '').includes(norm(targetText)));
               }
               if (match) {
-                el.value = match.value;
-                el.dispatchEvent(new Event('change', { bubbles: true }));
+                setSelectOption(el, match);
                 return true;
               }
             }
             return false;
           };
 
+          const findDocTypeSelect = () => {
+            const directSelectors = [
+              '#frmPrincipal\\\\:cmbTipoComprobante',
+              'select[id*="TipoComprobante" i]',
+              'select[name*="TipoComprobante" i]',
+              'select[id*="tipoComprobante" i]',
+            ];
+            for (const sel of directSelectors) {
+              const el = document.querySelector(sel);
+              if (el && el.tagName === 'SELECT') return el;
+            }
+            const form = document.querySelector('#frmPrincipal') || document;
+            return Array.from(form.querySelectorAll('select')).find((el) => {
+              const texts = Array.from(el.options).map((o) => norm(o.textContent || ''));
+              return texts.some((t) => t.includes('factura')) && texts.some((t) => t.includes('retencion'));
+            }) || null;
+          };
+
+          const selectDocType = (keywords, fallbackVal) => {
+            const el = findDocTypeSelect();
+            if (!el) return { ok: false, val: '', text: '' };
+            const opts = Array.from(el.options);
+            let match = null;
+            for (const kw of keywords) {
+              const nkw = norm(kw);
+              match = opts.find((o) => norm(o.textContent || '').includes(nkw));
+              if (match) break;
+            }
+            if (!match && fallbackVal) {
+              match = opts.find((o) => o.value === String(fallbackVal));
+            }
+            if (match) {
+              setSelectOption(el, match);
+              return { ok: true, val: String(el.value || ''), text: (match.textContent || '').trim() };
+            }
+            return { ok: false, val: String(el.value || ''), text: (opts[el.selectedIndex]?.textContent || '').trim() };
+          };
+
           const yOk = selectByMatch(['#frmPrincipal\\\\:ano', 'select[id$=":ano"]'], ${JSON.stringify(String(filter.year))}, ${JSON.stringify(String(filter.year))});
           const mOk = selectByMatch(['#frmPrincipal\\\\:mes', 'select[id$=":mes"]'], ${JSON.stringify(String(filter.month))}, '');
           const dOk = selectByMatch(['#frmPrincipal\\\\:dia', 'select[id$=":dia"]'], ${JSON.stringify(String(filter.day))}, ${filter.day === 0 ? '"Todos"' : JSON.stringify(String(filter.day))});
-          const tOk = selectByMatch(
-            ['#frmPrincipal\\\\:cmbTipoComprobante', 'select[id*="TipoComprobante"]'],
-            ${JSON.stringify(docMeta.sriSelectValue)},
-            ${JSON.stringify(filter.docType === 'ALL' ? 'Todos' : docMeta.label)}
-          );
+          const tRes = selectDocType(${JSON.stringify(docKeywords)}, ${JSON.stringify(docMeta.sriSelectValue)});
 
           const form = document.querySelector('#frmPrincipal');
           if (form) {
             form.scrollIntoView({ behavior: 'instant', block: 'start' });
           }
 
-          return { yOk, mOk, dOk, tOk };
+          const curVal = (sel) => {
+            const el = document.querySelector(sel);
+            return el ? String(el.value || '') : '';
+          };
+          return {
+            yOk,
+            mOk,
+            dOk,
+            tOk: tRes.ok,
+            tVal: tRes.val,
+            tText: tRes.text,
+            mVal: curVal('#frmPrincipal\\\\:mes') || curVal('select[id$=":mes"]'),
+            yVal: curVal('#frmPrincipal\\\\:ano') || curVal('select[id$=":ano"]'),
+          };
         })();
       `);
 
+      this.trace(
+        'FILTERS_APPLIED',
+        `want=${filter.year}-${filter.month}-${filter.day}/${filter.docType} ` +
+        `got=${applied?.yVal ?? '?'}-${applied?.mVal ?? '?'}/${applied?.tVal ?? '?'}(${applied?.tText ?? ''}) ` +
+        `ok=${Boolean(applied?.yOk)}/${Boolean(applied?.mOk)}/${Boolean(applied?.dOk)}/${Boolean(applied?.tOk)}`
+      );
       const anyApplied = Boolean(applied?.yOk || applied?.mOk || applied?.tOk);
       return {
         ok: anyApplied,
@@ -1383,6 +1931,8 @@ export class SriPortalManager {
             );
           const isVisible = (el) => {
             if (!el) return false;
+            const style = window.getComputedStyle(el);
+            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
             const rect = el.getBoundingClientRect();
             return rect.width > 0 && rect.height > 0;
           };
@@ -1394,9 +1944,40 @@ export class SriPortalManager {
           const noData =
             /no existen datos/i.test(firstRowText) ||
             (/no existen datos/i.test(bodyText) && tableRows.length === 0);
-          const isLoading = Boolean(
-            document.querySelector('.ui-blockui, .ui-widget-overlay, .p-blockui, .ui-state-loading')
+          const isLoading = Array.from(
+            document.querySelectorAll('.ui-blockui, .ui-widget-overlay, .p-blockui, .rf-st-start, .ui-state-loading')
+          ).some(isVisible);
+          const formScope = document.querySelector('#frmPrincipal') || document;
+          const captchaInput = formScope.querySelector(
+            'input[id*="captcha" i], input[name*="captcha" i], ' +
+            'input[placeholder*="captcha" i], input[aria-label*="captcha" i]'
           );
+          const captchaImg = formScope.querySelector(
+            'img[src*="captcha" i], img[id*="captcha" i], img[src*="kaptcha" i], img[src*="jcaptcha" i]'
+          );
+          const captchaInputVisible = isVisible(captchaInput);
+          const captchaImage = isVisible(captchaImg);
+          const captchaWidget = captchaInputVisible || captchaImage;
+          const captchaValue =
+            captchaInput && 'value' in captchaInput ? String(captchaInput.value || '').trim() : '';
+          const messageEls = Array.from(
+            document.querySelectorAll(
+              '.ui-messages-error-summary, .ui-messages-error-detail, .ui-message-error-detail, ' +
+              '.ui-growl-title, .ui-growl-message, .ui-messages-warn-summary, .ui-messages-warn-detail, ' +
+              '.ui-messages-fatal-summary, .ui-messages-fatal-detail'
+            )
+          ).filter(isVisible);
+          const sriMessage = Array.from(
+            new Set(
+              messageEls
+                .map((el) => (el.textContent || '').replace(/\\s+/g, ' ').trim())
+                .filter(Boolean)
+            )
+          )
+            .join(' — ')
+            .slice(0, 220);
+          // Only trust a real SRI error message (not random text elsewhere on the page).
+          const captchaError = /captcha[^.]{0,30}(incorrect|inv[aá]lid|err[oó]ne|no\\s+es\\s+correct|no\\s+coincide|fall)/i.test(sriMessage);
           const signature = hasData
             ? tableRows.length + ':' + firstRowText.slice(0, 80) + '|' + lastRowText.slice(0, 80)
             : '';
@@ -1405,10 +1986,117 @@ export class SriPortalManager {
             hasData,
             noData,
             isLoading,
+            captchaError,
+            captchaWidget,
+            captchaInput: captchaInputVisible,
+            captchaImage,
+            captchaValue,
+            sriMessage,
             signature,
           };
         })();
       `);
+
+      const captchaWidget = Boolean(probe?.captchaWidget);
+      const captchaError = Boolean(probe?.captchaError);
+      const captchaInput = Boolean(probe?.captchaInput);
+      const captchaValue = String(probe?.captchaValue ?? '').trim();
+      const now = Date.now();
+
+      // Recent month transition: ignore the stale/paginated table so it can't trigger a
+      // duplicate report download racing with the new month's Consultar click.
+      if (this.activeRange && now < this.rangeTransitionUntil) return;
+
+      // A) Range paused on CAPTCHA: auto-submit «Consultar» as soon as the user types the code.
+      if (this.activeRange && this.rangeCaptchaPaused && !probe?.hasData) {
+        if (captchaValue && captchaValue !== this.captchaLastSubmittedValue) {
+          this.captchaLastSubmittedValue = captchaValue;
+          this.rangeCaptchaPaused = false;
+          const res = await this.clickConsultar(true);
+          this.trace(
+            'CAPTCHA_SUBMIT',
+            `range month=${this.activeRange.currentIndex} clicked=${res.clicked}`
+          );
+          if (res.clicked) {
+            this.autoConsultClickedAt = Date.now();
+            this.resetConsultRecovery();
+            this.emitRangeProgress('consulting');
+            this.emitStatus({
+              state: 'downloading',
+              url: this.view.webContents.getURL(),
+              message: 'CAPTCHA recibido. Pulsando «Consultar» automáticamente...',
+            });
+          } else {
+            this.rangeCaptchaPaused = true;
+          }
+        }
+        return;
+      }
+
+      // B) Single month paused on CAPTCHA: same auto-submit behaviour.
+      if (!this.activeRange && this.monthCaptchaPaused && !probe?.hasData) {
+        if (captchaValue && captchaValue !== this.captchaLastSubmittedValue) {
+          this.captchaLastSubmittedValue = captchaValue;
+          this.monthCaptchaPaused = false;
+          const res = await this.clickConsultar(true);
+          this.trace('CAPTCHA_SUBMIT', `single month clicked=${res.clicked}`);
+          if (res.clicked) {
+            this.awaitingMonthConsult = true;
+            this.resetConsultRecovery();
+            this.monthConsultPreSignature = res.signature ?? '';
+            this.monthConsultAt = Date.now();
+            this.emitStatus({
+              state: 'downloading',
+              url: this.view.webContents.getURL(),
+              message: 'CAPTCHA recibido. Pulsando «Consultar» automáticamente...',
+            });
+          } else {
+            this.monthCaptchaPaused = true;
+          }
+        }
+        return;
+      }
+
+      // Post-click we only react to explicit non-captcha errors. Genuine CAPTCHAs are detected
+      // before clicking (field + image) or when the watchdog retries, which avoids false positives.
+      const rangeAwaiting = Boolean(this.activeRange) && this.autoConsultClickedAt > 0;
+      const monthAwaiting = !this.activeRange && this.awaitingMonthConsult;
+
+      // The SRI displayed a non-CAPTCHA error/warning but returned no results.
+      if (!probe?.hasData && (rangeAwaiting || monthAwaiting)) {
+        const lastSubmitAt = this.activeRange ? this.autoConsultClickedAt : this.monthConsultAt;
+        if (probe?.sriMessage && !/captcha/i.test(probe.sriMessage) && now - lastSubmitAt > 4000) {
+          this.trace('SRI_QUERY_MESSAGE', probe.sriMessage);
+          if (this.activeRange) {
+            this.autoConsultClickedAt = 0;
+            this.emitRangeProgress('waiting_consult');
+            this.emitStatus({
+              state: 'error',
+              url: this.view!.webContents.getURL(),
+              message: `El SRI respondió: ${probe.sriMessage}. Revisa el portal y pulsa «Consultar» para continuar.`,
+            });
+          } else {
+            this.awaitingMonthConsult = false;
+            this.emitStatus({
+              state: 'error',
+              url: this.view!.webContents.getURL(),
+              message: `El SRI respondió: ${probe.sriMessage}. Pulsa «Consultar» manualmente en el portal.`,
+            });
+          }
+          return;
+        }
+
+        // Watchdog: the query was clicked but produced no data, message or real CAPTCHA.
+        if (
+          now - lastSubmitAt > this.consultRecoveryNextWaitMs &&
+          !probe?.isLoading &&
+          !this.rangeCaptchaPaused &&
+          !this.monthCaptchaPaused
+        ) {
+          await this.recoverStuckConsult(this.activeRange ? 'range' : 'month');
+          return;
+        }
+      }
 
       // Single-month "Descargar Facturas": wait for the new query result, then capture even if
       // the same month was queried before (same table signature).
@@ -1417,27 +2105,53 @@ export class SriPortalManager {
         const elapsed = Date.now() - this.monthConsultAt;
         const changed =
           Boolean(probe?.signature) && probe.signature !== this.monthConsultPreSignature;
-        // Wait for the table to change, or fall back to a timeout when re-querying the same month.
-        if (!changed && elapsed < 8000) return;
-        this.awaitingMonthConsult = false;
-        if (probe?.hasData) {
+        if (probe?.hasData && (changed || elapsed >= 8000)) {
+          this.awaitingMonthConsult = false;
+          this.monthCaptchaPaused = false;
+          this.captchaNoticeKey = '';
+          this.captchaLastSubmittedValue = '';
+          this.captchaRetryDone = false;
+          this.resetConsultRecovery();
           if (probe.signature) this.lastAutoCapturedSignature = probe.signature;
           await this.captureFromPortal();
-        } else {
+          return;
+        }
+        if (probe?.noData && elapsed > 3000) {
+          this.awaitingMonthConsult = false;
+          this.resetConsultRecovery();
           this.emitStatus({
             state: 'consult_ready',
             url: this.view.webContents.getURL(),
             message: 'El período consultado no tiene comprobantes.',
           });
+          return;
         }
+        // Otherwise keep waiting; the watchdog above handles queries that never answer.
         return;
       }
 
       if (probe?.hasReportButton && probe?.hasData) {
+        // Results are here — clear any CAPTCHA bookkeeping before capturing.
+        this.rangeCaptchaPaused = false;
+        this.monthCaptchaPaused = false;
+        this.captchaNoticeKey = '';
+        this.captchaLastSubmittedValue = '';
+        this.captchaRetryDone = false;
         // Already captured this exact table — do NOT overwrite the status banner or re-trigger!
         if (probe.signature && probe.signature === this.lastAutoCapturedSignature) {
+          // But if a new query was triggered and the table never changed, it's stuck (e.g. the
+          // month filter didn't apply). Recover instead of waiting forever.
+          if (
+            this.activeRange &&
+            this.autoConsultClickedAt > 0 &&
+            now - this.autoConsultClickedAt > this.consultRecoveryNextWaitMs &&
+            !probe.isLoading
+          ) {
+            await this.recoverStuckConsult('range');
+          }
           return;
         }
+        this.resetConsultRecovery();
         const settings = this.store.getSettings();
         // In Date Range mode always capture automatically so the whole range runs unassisted.
         const autoTrigger = this.activeRange
@@ -1463,7 +2177,21 @@ export class SriPortalManager {
         if (this.autoConsultClickedAt === 0) return;
         // Give the SRI AJAX query time to finish before trusting the "no data" message.
         if (Date.now() - this.autoConsultClickedAt < 2500) return;
+        this.resetConsultRecovery();
         await this.skipEmptyRangeMonth();
+        return;
+      }
+
+      // Range watchdog fallback: the table has rows but no usable report link after a query.
+      if (
+        this.activeRange &&
+        this.autoConsultClickedAt > 0 &&
+        !probe?.isLoading &&
+        now - this.autoConsultClickedAt > this.consultRecoveryNextWaitMs &&
+        !this.rangeCaptchaPaused &&
+        !probe?.sriMessage
+      ) {
+        await this.recoverStuckConsult('range');
       }
     } catch {
       // ignore transient navigation errors
@@ -1617,20 +2345,20 @@ export class SriPortalManager {
           document.querySelectorAll('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr')
         );
 
-        const activePageEl = document.querySelector(
-          '#frmPrincipal\\\\:tablaCompRecibidos .ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-active, .rf-ds-act, .rf-ds-nmb-btn.rf-ds-act, [class*="paginator"] [aria-current="page"], .ui-paginator-page.ui-state-highlight'
+        const activePageEl = form.querySelector(
+          '#frmPrincipal\\\\:tablaCompRecibidos .ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-highlight, .rf-ds-act, .rf-ds-nmb-btn.rf-ds-act, [class*="paginator"] [aria-current="page"]'
         );
         let currentPage = Number((activePageEl?.textContent || '').trim()) || 0;
         if (!currentPage) {
-          const curTxt = document.querySelector('.ui-paginator-current, [class*="paginator-current"]')?.textContent || '';
+          const curTxt = form.querySelector('.ui-paginator-current, [class*="paginator-current"]')?.textContent || '';
           const pm = /\\b(\\d+)\\s*(?:de|of|[/])\\s*\\d+/i.exec(curTxt);
           currentPage = pm ? Number(pm[1]) : 1;
         }
-        const rppSelect = document.querySelector(
+        const rppSelect = form.querySelector(
           '#frmPrincipal\\\\:tablaCompRecibidos select.ui-paginator-rpp-options, select.ui-paginator-rpp-options'
         );
         const hasNextPage = Boolean(
-          document.querySelector(
+          form.querySelector(
             '#frmPrincipal\\\\:tablaCompRecibidos .ui-paginator-next:not(.ui-state-disabled), .ui-paginator-next:not(.ui-state-disabled), a.rf-ds-btn-next:not(.rf-ds-dis), .rf-ds-btn-next:not(.rf-ds-dis), [id$="_ds_next"]:not(.rf-ds-dis)'
           )
         );
@@ -1663,7 +2391,19 @@ export class SriPortalManager {
           }
         }
 
-        // 1. Match exact row rendered in the current DOM page (strictest match first)
+        // Harvest visible (ruc, numComp) pairs on this page to build exact page index cache
+        const visibleRowKeys = [];
+        for (const tr of rows) {
+          const txt = tr.textContent || '';
+          const numMatch = /\\b(\\d{3}-\\d{3}-\\d{9})\\b/.exec(txt);
+          if (numMatch) {
+            const rucMatch = /\\b(\\d{13})\\b/.exec(txt);
+            if (rucMatch) visibleRowKeys.push(rucMatch[1] + '|' + numMatch[1]);
+            visibleRowKeys.push('|' + numMatch[1]);
+          }
+        }
+
+        // 1. Match exact row rendered in the current DOM page (strict identity verification!)
         let targetLink = null;
         if (clave) {
           for (const tr of rows) {
@@ -1686,12 +2426,13 @@ export class SriPortalManager {
         if (!targetLink && numComp) {
           for (const tr of rows) {
             const txt = tr.textContent || '';
-            if (txt.includes(numComp)) {
+            if (txt.includes(numComp) && (!rucEmisor || txt.includes(rucEmisor))) {
               targetLink = tr.querySelector(linkSel);
               if (targetLink) break;
             }
           }
         }
+        // Only fall back to rowIndex if we have no numComp or the row does not display invoice numbers
         if (!targetLink && rowIndex >= 0) {
           for (const tr of rows) {
             const riAttr = tr.getAttribute('data-ri');
@@ -1703,7 +2444,10 @@ export class SriPortalManager {
               lnkIdx === rowIndex ||
               trIdxMatch
             ) {
-              if (lnk) {
+              const txt = tr.textContent || '';
+              const rowHasOtherNum = Boolean(numComp && /\\b\\d{3}-\\d{3}-\\d{9}\\b/.test(txt) && !txt.includes(numComp));
+              const rowHasOtherRuc = Boolean(rucEmisor && /\\b\\d{13}\\b/.test(txt) && !txt.includes(rucEmisor));
+              if (lnk && !rowHasOtherNum && !rowHasOtherRuc) {
                 targetLink = lnk;
                 break;
               }
@@ -1711,12 +2455,14 @@ export class SriPortalManager {
           }
         }
 
-        if (!targetLink && requireDomMatch) {
+        // If we know the invoice number and it is NOT rendered on this page, NEVER guess another row by index!
+        if (!targetLink && (requireDomMatch || Boolean(numComp))) {
           return {
             ok: false,
             notOnCurrentPage: true,
             pageSize,
             currentPage,
+            visibleRowKeys,
             reason: 'La fila aún no está visible en la página actual de la tabla del SRI.',
           };
         }
@@ -1928,7 +2674,21 @@ export class SriPortalManager {
               isSessionExpired,
               pageSize,
               currentPage,
+              visibleRowKeys,
             };
+          }
+          if (clave && clave.length === 49) {
+            const fullXmlText = new TextDecoder('utf-8').decode(bytes);
+            if (!fullXmlText.includes(clave)) {
+              return {
+                ok: false,
+                notOnCurrentPage: true,
+                reason: 'El XML devuelto por el SRI corresponde a otro comprobante.',
+                pageSize,
+                currentPage,
+                visibleRowKeys,
+              };
+            }
           }
         }
 
@@ -1937,7 +2697,14 @@ export class SriPortalManager {
         for (let i = 0; i < bytes.length; i += chunk) {
           bin += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
         }
-        return { ok: true, base64: btoa(bin), pageSize, currentPage, foundInDom: Boolean(targetLink) };
+        return {
+          ok: true,
+          base64: btoa(bin),
+          pageSize,
+          currentPage,
+          foundInDom: Boolean(targetLink),
+          visibleRowKeys,
+        };
       })();
     `,
       22_000,
@@ -1949,6 +2716,13 @@ export class SriPortalManager {
     }
     if (typeof result?.currentPage === 'number' && result.currentPage > 0) {
       this.lastActiveTablePage = result.currentPage;
+      if (Array.isArray(result.visibleRowKeys)) {
+        for (const rk of result.visibleRowKeys) {
+          if (typeof rk === 'string' && rk) {
+            this.rowPageCache.set(rk, result.currentPage);
+          }
+        }
+      }
     }
 
     if (result?.ok && typeof result.base64 === 'string') {
@@ -1985,7 +2759,7 @@ export class SriPortalManager {
     numeroComprobante?: string;
     rucEmisor?: string;
     signal?: AbortSignal;
-  }): Promise<{ ok: boolean; buffer?: Buffer; reason?: string }> {
+  }): Promise<{ ok: boolean; buffer?: Buffer; reason?: string; notOnCurrentPage?: boolean }> {
     if (!this.view || !this.isOnRecibidosPage()) {
       return { ok: false, reason: 'El portal del SRI no está abierto en Comprobantes Recibidos.' };
     }
@@ -2006,6 +2780,7 @@ export class SriPortalManager {
     });
     const pendingEntry: PendingNativeDocDownload = {
       kind: params.kind,
+      expectedClave: params.claveAcceso,
       resolve: resolveDownload,
       timer: setTimeout(() => {
         if (this.pendingNativeDocDownload === pendingEntry) {
@@ -2019,7 +2794,12 @@ export class SriPortalManager {
     };
     this.pendingNativeDocDownload = pendingEntry;
 
-    const clicked = await this.execJsWithTimeout<{ clicked: boolean; id?: string }>(
+    const clicked = await this.execJsWithTimeout<{
+      clicked: boolean;
+      id?: string;
+      currentPage?: number;
+      visibleRowKeys?: string[];
+    }>(
       `
       (() => {
         const kind = ${JSON.stringify(params.kind)};
@@ -2028,9 +2808,25 @@ export class SriPortalManager {
         const numComp = ${JSON.stringify(params.numeroComprobante ?? '')};
         const rucEmisor = ${JSON.stringify(params.rucEmisor ?? '')};
 
+        const scope = document.querySelector('#frmPrincipal') || document;
+        const activeEl = scope.querySelector(
+          '.ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-highlight, .rf-ds-act, .rf-ds-nmb-btn.rf-ds-act'
+        );
+        const currentPage = Number((activeEl?.textContent || '').trim()) || 1;
+
         const rows = Array.from(
           document.querySelectorAll('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr')
         );
+        const visibleRowKeys = [];
+        for (const tr of rows) {
+          const txt = tr.textContent || '';
+          const numMatch = /\\b(\\d{3}-\\d{3}-\\d{9})\\b/.exec(txt);
+          if (numMatch) {
+            const rucMatch = /\\b(\\d{13})\\b/.exec(txt);
+            if (rucMatch) visibleRowKeys.push(rucMatch[1] + '|' + numMatch[1]);
+            visibleRowKeys.push('|' + numMatch[1]);
+          }
+        }
         const linkSel =
           kind === 'xml'
             ? 'a[id*="lnkXml"], a[id*="Xml"], a[onclick*="lnkXml"]'
@@ -2058,7 +2854,7 @@ export class SriPortalManager {
         if (!targetLink && numComp) {
           for (const tr of rows) {
             const txt = tr.textContent || '';
-            if (txt.includes(numComp)) {
+            if (txt.includes(numComp) && (!rucEmisor || txt.includes(rucEmisor))) {
               targetLink = tr.querySelector(linkSel);
               if (targetLink) break;
             }
@@ -2076,7 +2872,10 @@ export class SriPortalManager {
               lnkIdx === rowIndex ||
               trIdxMatch
             ) {
-              if (lnk) {
+              const txt = tr.textContent || '';
+              const rowHasOtherNum = Boolean(numComp && /\\b\\d{3}-\\d{3}-\\d{9}\\b/.test(txt) && !txt.includes(numComp));
+              const rowHasOtherRuc = Boolean(rucEmisor && /\\b\\d{13}\\b/.test(txt) && !txt.includes(rucEmisor));
+              if (lnk && !rowHasOtherNum && !rowHasOtherRuc) {
                 targetLink = lnk;
                 break;
               }
@@ -2084,14 +2883,25 @@ export class SriPortalManager {
           }
         }
 
-        if (!targetLink) return { clicked: false };
+        if (!targetLink) return { clicked: false, currentPage, visibleRowKeys };
         targetLink.click();
-        return { clicked: true, id: targetLink.id || '' };
+        return { clicked: true, id: targetLink.id || '', currentPage, visibleRowKeys };
       })();
     `,
       8_000,
       `click-${params.kind}`
     );
+
+    if (typeof clicked?.currentPage === 'number' && clicked.currentPage > 0) {
+      this.lastActiveTablePage = clicked.currentPage;
+      if (Array.isArray(clicked.visibleRowKeys)) {
+        for (const rk of clicked.visibleRowKeys) {
+          if (typeof rk === 'string' && rk) {
+            this.rowPageCache.set(rk, clicked.currentPage);
+          }
+        }
+      }
+    }
 
     if (!clicked?.clicked) {
       if (pendingEntry) {
@@ -2102,6 +2912,7 @@ export class SriPortalManager {
       }
       return {
         ok: false,
+        notOnCurrentPage: true,
         reason: `No se encontró el enlace ${params.kind.toUpperCase()} visible en la tabla del SRI.`,
       };
     }
@@ -2118,20 +2929,30 @@ export class SriPortalManager {
           const targetNum = ${JSON.stringify(targetPageOneBased)};
           const target = String(targetNum);
 
+          const scope = document.querySelector('#frmPrincipal') || document;
+
+          const isElVisible = (el) => {
+            if (!el) return false;
+            const cs = window.getComputedStyle(el);
+            if (cs.display === 'none' || cs.visibility === 'hidden' || cs.opacity === '0') return false;
+            const r = el.getBoundingClientRect();
+            return r.width > 0 && r.height > 0;
+          };
+
           const getFirstRowSig = () => {
-            const tr = document.querySelector('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr');
+            const tr = scope.querySelector('#frmPrincipal\\\\:tablaCompRecibidos_data tr, table[id*="tablaCompRecibidos"] tbody tr');
             if (!tr) return '';
             const lnk = tr.querySelector('a[id*="lnkXml"], a[id*="lnkPdf"], a[id*="Xml"], a[id*="Pdf"]');
             return (lnk?.id || tr.id || '') + '|' + (tr.textContent || '').trim().slice(0, 80);
           };
 
           const getActiveNum = () => {
-            const active = document.querySelector(
+            const active = scope.querySelector(
               '#frmPrincipal\\\\:tablaCompRecibidos .ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-active, .ui-paginator-page.ui-state-highlight, .rf-ds-act, .rf-ds-nmb-btn.rf-ds-act, [class*="paginator"] [aria-current="page"]'
             );
             const n = Number((active?.textContent || '').trim());
             if (n > 0) return n;
-            const curTxt = document.querySelector('.ui-paginator-current, [class*="paginator-current"]')?.textContent || '';
+            const curTxt = scope.querySelector('.ui-paginator-current, [class*="paginator-current"]')?.textContent || '';
             const pm = /\\b(\\d+)\\s*(?:de|of|[/])\\s*\\d+/i.exec(curTxt);
             return pm ? Number(pm[1]) : 1;
           };
@@ -2139,9 +2960,9 @@ export class SriPortalManager {
           const waitForPageChange = async (beforeSig, expectedNum) => {
             for (let i = 0; i < 40; i++) {
               await new Promise((r) => setTimeout(r, 150));
-              const isLoading = Boolean(
-                document.querySelector('.ui-blockui, .ui-widget-overlay, .rf-st-start, .ui-state-loading')
-              );
+              const isLoading = Array.from(
+                document.querySelectorAll('.ui-blockui, .ui-widget-overlay, .rf-st-start, .ui-state-loading')
+              ).some(isElVisible);
               const curNum = getActiveNum();
               const afterSig = getFirstRowSig();
               if (!isLoading && afterSig && afterSig !== beforeSig && (curNum === expectedNum || expectedNum <= 0)) {
@@ -2154,7 +2975,7 @@ export class SriPortalManager {
 
           const findPageButtons = () => {
             const explicit = Array.from(
-              document.querySelectorAll(
+              scope.querySelectorAll(
                 '#frmPrincipal\\\\:tablaCompRecibidos .ui-paginator-page, .ui-paginator-page, a.rf-ds-nmb-btn, span.rf-ds-nmb-btn, [id*="tablaCompRecibidos"] [class*="ds"] a, [class*="rf-ds"] a, [class*="paginator"] a, [class*="paginator"] button, [id*="ds_ds_"]'
               )
             );
@@ -2182,7 +3003,7 @@ export class SriPortalManager {
                   'button[aria-label*="Previous"]:not(:disabled)',
                 ];
             for (const s of sels) {
-              const el = document.querySelector(s);
+              const el = scope.querySelector(s);
               if (el) return el;
             }
             return null;
@@ -2218,7 +3039,7 @@ export class SriPortalManager {
             if (!stepBtn) {
               // Capture diagnostic summary of any paginator-like elements near the table
               const diagEls = Array.from(
-                document.querySelectorAll('[class*="pagin"], [class*="rf-ds"], [id*="ds"], [id*="tablaCompRecibidos"] tfoot a, [id*="tablaCompRecibidos"] tfoot span')
+                scope.querySelectorAll('[class*="pagin"], [class*="rf-ds"], [id*="ds"], [id*="tablaCompRecibidos"] tfoot a, [id*="tablaCompRecibidos"] tfoot span')
               )
                 .slice(0, 12)
                 .map((e) => e.tagName + '#' + (e.id || '') + '.' + String(e.className || '').replace(/\\s+/g, '.') + '[' + (e.textContent || '').trim().slice(0, 20) + ']');
@@ -2234,6 +3055,9 @@ export class SriPortalManager {
         16_000,
         `paginate-${targetPageOneBased}`
       );
+      if (typeof navResult?.curPage === 'number' && navResult.curPage > 0) {
+        this.lastActiveTablePage = navResult.curPage;
+      }
       if (navResult?.ok) {
         this.lastActiveTablePage = navResult.curPage || targetPageOneBased;
         this.trace('PAGINATOR_NAV', `target=${targetPageOneBased} cur=${this.lastActiveTablePage} method=${navResult.method}`);
@@ -2276,98 +3100,123 @@ export class SriPortalManager {
         } = { ok: false, reason: `No se pudo descargar el ${kind.toUpperCase()} original del SRI.` };
 
         const hasRowIndex = typeof params.rowIndex === 'number' && params.rowIndex >= 0;
-        let lastTargetPage = this.lastActiveTablePage || 1;
+        const pageSizeEst = this.knownTablePageSize || 50;
+        const maxPages = Math.max(
+          1,
+          Math.min(
+            12,
+            this.lastReportKeysCount > 0 ? Math.ceil(this.lastReportKeysCount / pageSizeEst) : 5
+          )
+        );
+        const lookupCachedPage = (): number | undefined => {
+          if (params.rucEmisor && params.numeroComprobante) {
+            const p = this.rowPageCache.get(`${params.rucEmisor}|${params.numeroComprobante}`);
+            if (p) return p;
+          }
+          if (params.numeroComprobante) {
+            const p = this.rowPageCache.get(`|${params.numeroComprobante}`);
+            if (p) return p;
+          }
+          return undefined;
+        };
 
-        // If a previous page 2+ fetch required native click, navigate to target page and use native click directly
-        if (this.preferNativeClick) {
+        const buildCandidatePages = (): number[] => {
+          const order: number[] = [];
+          const pushUnique = (p: number) => {
+            if (p >= 1 && p <= maxPages && !order.includes(p)) order.push(p);
+          };
+          const cached = lookupCachedPage();
+          if (cached) pushUnique(cached);
+          // Always check current page early so we avoid pointless page switches
+          pushUnique(this.lastActiveTablePage || 1);
           if (hasRowIndex) {
-            const targetPage = Math.floor((params.rowIndex as number) / (this.knownTablePageSize || 50)) + 1;
-            lastTargetPage = targetPage;
-            if (targetPage !== this.lastActiveTablePage) {
-              await this.navigateTableToPage(targetPage);
-            }
+            pushUnique(Math.floor((params.rowIndex as number) / pageSizeEst) + 1);
           }
-          const nativeFast = await this.tryNativeClickPortalDoc({ kind, ...params });
-          if (nativeFast.ok && nativeFast.buffer) {
-            return { ok: true, buffer: nativeFast.buffer };
+          for (let p = 1; p <= maxPages; p++) {
+            pushUnique(p);
           }
-          lastRes = nativeFast;
-        }
+          return order;
+        };
 
-        for (let attempt = 0; attempt < retryDelaysMs.length; attempt++) {
+        let lastTargetPage = this.lastActiveTablePage || 1;
+        const candidatePages = buildCandidatePages();
+
+        for (const candidatePage of candidatePages) {
           if (params.signal?.aborted) {
             return { ok: false, reason: 'Descarga cancelada.' };
           }
 
-          if (retryDelaysMs[attempt] > 0) {
-            await new Promise((r) => setTimeout(r, retryDelaysMs[attempt]));
-            if (params.signal?.aborted) {
-              return { ok: false, reason: 'Descarga cancelada.' };
+          if (candidatePage !== this.lastActiveTablePage) {
+            const paged = await this.navigateTableToPage(candidatePage);
+            if (!paged) continue;
+          }
+          lastTargetPage = candidatePage;
+
+          // If native click mode is already active for this consultation, try native click first
+          if (this.preferNativeClick) {
+            const nativeFast = await this.tryNativeClickPortalDoc({ kind, ...params });
+            if (nativeFast.ok && nativeFast.buffer) {
+              return { ok: true, buffer: nativeFast.buffer };
             }
+            if (nativeFast.notOnCurrentPage) {
+              // Row lives on a different page (SRI table sort order != TXT report order) — keep scanning!
+              continue;
+            }
+            lastRes = nativeFast;
           }
 
-          // First attempt: require DOM match when rowIndex is known so we paginate cleanly BEFORE posting
-          let res = await this.tryFetchPortalDocOnce({
+          // Try fetch() on this page (strict DOM match required!)
+          const res = await this.tryFetchPortalDocOnce({
             kind,
             claveAcceso: params.claveAcceso,
             rowIndex: params.rowIndex,
             numeroComprobante: params.numeroComprobante,
             rucEmisor: params.rucEmisor,
-            requireDomMatch: hasRowIndex && attempt === 0,
+            requireDomMatch: true,
           });
 
           if (res.ok && res.buffer) {
             return { ok: true, buffer: res.buffer };
           }
-
           if (res.isSessionExpired) {
             lastRes = res;
             break;
           }
-
-          // If row isn't on the active page, switch PrimeFaces paginator to its page and fetch
-          if (hasRowIndex && (res.notOnCurrentPage || attempt === 0)) {
-            const pageSize = res.pageSize && res.pageSize > 0 ? res.pageSize : this.knownTablePageSize || 50;
-            const targetPage = Math.floor((params.rowIndex as number) / pageSize) + 1;
-            lastTargetPage = targetPage;
-
-            if (res.notOnCurrentPage || res.currentPage !== targetPage) {
-              const paged = await this.navigateTableToPage(targetPage);
-              if (paged && !params.signal?.aborted) {
-                res = await this.tryFetchPortalDocOnce({
-                  kind,
-                  claveAcceso: params.claveAcceso,
-                  rowIndex: params.rowIndex,
-                  numeroComprobante: params.numeroComprobante,
-                  rucEmisor: params.rucEmisor,
-                  requireDomMatch: false,
-                });
-                if (res.ok && res.buffer) {
-                  return { ok: true, buffer: res.buffer };
-                }
-                if (res.isSessionExpired) {
-                  lastRes = res;
-                  break;
-                }
-              }
-            }
+          if (res.notOnCurrentPage) {
+            // Not on this page — continue scanning the remaining pages cleanly
+            lastRes = res;
+            continue;
           }
 
-          // Fallback: if fetch() returned HTML despite the row being on screen (e.g. PrimeFaces AJAX ViewState quirk on page 2+),
-          // click the real link in the DOM and capture the file via Electron's `will-download` handler!
-          if (!res.ok && !res.isSessionExpired && attempt === 0 && !params.signal?.aborted) {
-            const nativeRes = await this.tryNativeClickPortalDoc({ kind, ...params });
-            if (nativeRes.ok && nativeRes.buffer) {
-              this.preferNativeClick = true;
-              this.trace(
-                `SRI_${kind.toUpperCase()}_NATIVE_OK`,
-                `row=${params.rowIndex ?? -1} page=${lastTargetPage} switched_to_native=true`
-              );
-              return { ok: true, buffer: nativeRes.buffer };
-            }
+          // Row WAS found on this page, but fetch() returned HTML -> immediately try native link click!
+          const nativeRes = await this.tryNativeClickPortalDoc({ kind, ...params });
+          if (nativeRes.ok && nativeRes.buffer) {
+            this.preferNativeClick = true;
+            this.trace(
+              `SRI_${kind.toUpperCase()}_NATIVE_OK`,
+              `row=${params.rowIndex ?? -1} page=${candidatePage} switched_to_native=true`
+            );
+            return { ok: true, buffer: nativeRes.buffer };
           }
 
-          lastRes = res;
+          // One clean backoff retry on this same matched page before giving up
+          await new Promise((r) => setTimeout(r, 600));
+          if (params.signal?.aborted) {
+            return { ok: false, reason: 'Descarga cancelada.' };
+          }
+          const retryFetch = await this.tryFetchPortalDocOnce({
+            kind,
+            claveAcceso: params.claveAcceso,
+            rowIndex: params.rowIndex,
+            numeroComprobante: params.numeroComprobante,
+            rucEmisor: params.rucEmisor,
+            requireDomMatch: true,
+          });
+          if (retryFetch.ok && retryFetch.buffer) {
+            return { ok: true, buffer: retryFetch.buffer };
+          }
+          lastRes = retryFetch.ok ? nativeRes : retryFetch;
+          break;
         }
 
         this.trace(

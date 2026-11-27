@@ -321,6 +321,29 @@ describe('Faktum SRI Core Services', () => {
       { year: 2026, month: 2 },
     ]);
 
+    // Future months strictly after reference date are discarded
+    const currentYearMonths = expandMonthsInRange(
+      '2026-01-01',
+      '2026-12-31',
+      new Date(2026, 10, 27) // 2026-11-27
+    );
+    expect(currentYearMonths).toHaveLength(11);
+    expect(currentYearMonths[0]).toEqual({ year: 2026, month: 1 });
+    expect(currentYearMonths[10]).toEqual({ year: 2026, month: 11 });
+
+    // Past years keep all 12 months
+    const pastYearMonths = expandMonthsInRange(
+      '2025-01-01',
+      '2025-12-31',
+      new Date(2026, 10, 27)
+    );
+    expect(pastYearMonths).toHaveLength(12);
+
+    // Purely future ranges return empty
+    expect(
+      expandMonthsInRange('2026-12-01', '2026-12-31', new Date(2026, 10, 27))
+    ).toEqual([]);
+
     expect(
       isEntryWithinDateRange(
         { claveAcceso: SAMPLE_CLAVE_FACTURA, fechaEmision: '15/11/2026' },

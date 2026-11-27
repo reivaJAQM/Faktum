@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, nativeImage, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell } from 'electron';
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
@@ -34,7 +34,11 @@ function sendToRenderer<T>(channel: string, payload: T) {
 }
 
 function resolveAppIconPath(): string | undefined {
+  const iconFile = process.platform === 'win32' ? 'icon.ico' : 'icon.png';
   const candidates = [
+    path.join(app.getAppPath(), 'build', iconFile),
+    path.join(__dirname, '../../build', iconFile),
+    path.join(process.resourcesPath, iconFile),
     path.join(app.getAppPath(), 'build', 'icon.png'),
     path.join(__dirname, '../../build/icon.png'),
     path.join(process.resourcesPath, 'icon.png'),
@@ -50,7 +54,7 @@ function createMainWindow() {
     height: 860,
     minWidth: 1024,
     minHeight: 680,
-    title: 'Faktum — Descarga Masiva SRI',
+    title: 'Faktum',
     backgroundColor: '#0f172a',
     icon: iconPath,
     webPreferences: {
@@ -59,6 +63,11 @@ function createMainWindow() {
       nodeIntegration: false,
       sandbox: true,
     },
+  });
+
+  mainWindow.on('page-title-updated', (e) => {
+    e.preventDefault();
+    mainWindow?.setTitle('Faktum');
   });
 
   portalManager = new SriPortalManager(
@@ -403,8 +412,57 @@ function registerIpcHandlers() {
   });
 }
 
+function setupApplicationMenu() {
+  if (process.platform !== 'darwin') {
+    Menu.setApplicationMenu(null);
+    return;
+  }
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Faktum',
+      submenu: [
+        { role: 'about', label: 'Acerca de Faktum' },
+        { type: 'separator' },
+        { role: 'services', label: 'Servicios' },
+        { type: 'separator' },
+        { role: 'hide', label: 'Ocultar Faktum' },
+        { role: 'hideOthers', label: 'Ocultar otros' },
+        { role: 'unhide', label: 'Mostrar todo' },
+        { type: 'separator' },
+        { role: 'quit', label: 'Salir de Faktum' },
+      ],
+    },
+    {
+      label: 'Edición',
+      submenu: [
+        { role: 'undo', label: 'Deshacer' },
+        { role: 'redo', label: 'Rehacer' },
+        { type: 'separator' },
+        { role: 'cut', label: 'Cortar' },
+        { role: 'copy', label: 'Copiar' },
+        { role: 'paste', label: 'Pegar' },
+        { role: 'selectAll', label: 'Seleccionar todo' },
+      ],
+    },
+    {
+      label: 'Ventana',
+      submenu: [
+        { role: 'minimize', label: 'Minimizar' },
+        { role: 'zoom', label: 'Zoom' },
+        { role: 'close', label: 'Cerrar ventana' },
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
 app.whenReady().then(() => {
   app.setName('Faktum');
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.faktum.sri');
+  }
+  app.setAboutPanelOptions({ applicationName: 'Faktum', applicationVersion: app.getVersion() });
+  setupApplicationMenu();
   const iconPath = resolveAppIconPath();
   if (process.platform === 'darwin' && iconPath && app.dock) {
     app.dock.setIcon(nativeImage.createFromPath(iconPath));
