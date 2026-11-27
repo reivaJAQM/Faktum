@@ -48,7 +48,7 @@ Los archivos descargados se estructuran automáticamente por empresa/RUC, año, 
 | Escritorio y proceso principal | Electron 33, TypeScript, Node.js |
 | Interfaz de usuario | React 18, Vite 6, CSS moderno (modo claro y oscuro) |
 | Procesamiento de comprobantes | `fast-xml-parser`, `exceljs`, `pdfkit` |
-| Pruebas y empaquetado | Vitest, `electron-builder`, GitHub Actions |
+| Pruebas | Vitest |
 
 Estructura principal del proyecto:
 
@@ -77,72 +77,54 @@ tests/
 └── sri.test.ts                   # Pruebas unitarias de servicios núcleo
 ```
 
-## Requisitos previos (instalación desde código fuente)
+## Requisitos previos
 
 - **Node.js 20 o superior** (recomendado **Node.js 22 LTS**).
 - **npm 10 o superior** (incluido con Node.js).
-- **Git** para clonar el repositorio.
+- **Git**.
 
-## Instalación por sistema operativo
+## Instalación y ejecución por línea de comandos
 
-### Windows (10 / 11 — 64 bits)
+### Windows (PowerShell o CMD)
 
-#### Opción A: Usando el instalador o versión portable
-1. Descarga desde la sección **Releases** o **Actions** del repositorio:
-   - `Faktum-Setup-<version>-x64.exe` (instalador clásico con acceso directo en Escritorio y Menú Inicio), o
-   - `Faktum-Portable-<version>-x64.exe` (ejecutable directo sin instalación).
-2. Ejecuta el archivo `.exe`.
-   > Si Windows Defender SmartScreen muestra una advertencia por aplicación sin firma comercial, haz clic en **Más información** → **Ejecutar de todas formas**.
+1. Instala **Git** y **Node.js 22 LTS** desde la terminal con `winget`:
+   ```powershell
+   winget install --id Git.Git -e
+   winget install --id OpenJS.NodeJS.LTS -e
+   ```
+   *(Reinicia PowerShell/CMD tras la instalación para que `git`, `node` y `npm` queden disponibles en el `PATH`.)*
 
-#### Opción B: Desde el código fuente
-1. Instala [Git for Windows](https://git-scm.com/download/win) y [Node.js LTS](https://nodejs.org/).
-2. Abre **PowerShell** o **Símbolo del sistema (CMD)** y ejecuta:
+2. Clona el repositorio, instala dependencias e inicia la aplicación:
    ```powershell
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
    npm install
    npm start
    ```
-3. *(Opcional)* Para generar tus propios ejecutables `.exe` en la carpeta `release/`:
-   ```powershell
-   npm run dist:win
-   ```
 
 ---
 
-### macOS (Apple Silicon y Intel)
+### macOS (Terminal)
 
-#### Opción A: Usando el instalador `.dmg` o `.zip`
-1. Descarga `Faktum-<version>-arm64.dmg` (o `.zip`) desde **Releases** / **Actions**.
-2. Abre el `.dmg` y arrastra **Faktum** a la carpeta **Aplicaciones**.
-3. Si macOS indica que la app proviene de un desarrollador no identificado (Gatekeeper), quita el atributo de cuarentena desde **Terminal**:
+1. Instala **Git** y **Node.js** (con [Homebrew](https://brew.sh/)):
    ```bash
-   xattr -cr /Applications/Faktum.app
+   brew install git node@22
    ```
-   Luego abre **Faktum** normalmente.
+   *(Si ya tienes `git` y Node.js 20+ mediante `nvm` o `fnm`, omite este paso.)*
 
-#### Opción B: Desde el código fuente
-1. Instala [Node.js LTS](https://nodejs.org/) (o con Homebrew: `brew install node git`).
-2. Abre **Terminal** y ejecuta:
+2. Clona el repositorio, instala dependencias e inicia la aplicación:
    ```bash
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
    npm install
    npm start
    ```
-3. **Inicio rápido con doble clic:** El repositorio incluye el lanzador ejecutable `Iniciar Faktum.command`. Al abrirlo desde Finder, detecta automáticamente tu entorno de Node.js (`fnm`, `nvm` o Homebrew), compila si hay cambios pendientes en `src/` e inicia la aplicación.
-4. *(Opcional)* Para generar los instaladores `.dmg` y `.zip` en `release/`:
-   ```bash
-   npm run dist:mac
-   ```
 
 ---
 
-### Linux (Ubuntu, Debian, Fedora, Arch, etc.)
+### Linux (Terminal)
 
-Actualmente Linux se instala y ejecuta desde el código fuente (con posibilidad de generar paquetes locales mediante `electron-builder`).
-
-1. **Instala Git, Node.js 20+ y las dependencias base de escritorio / llavero seguro:**
+1. Instala **Git**, **Node.js 20+** y las librerías base requeridas por Electron y el llavero seguro:
    - **Ubuntu / Debian:**
      ```bash
      sudo apt update
@@ -157,9 +139,9 @@ Actualmente Linux se instala y ejecuta desde el código fuente (con posibilidad 
      ```bash
      sudo pacman -S --needed git nodejs npm nss gtk3 libxss alsa-lib gnome-keyring
      ```
-   > Si tu distribución trae una versión antigua de Node.js, instala **Node.js 22 LTS** con [nvm](https://github.com/nvm-sh/nvm) o [NodeSource](https://nodesource.com/).
+   > Si tu distribución incluye una versión anterior de Node.js, instala **Node.js 22 LTS** con [nvm](https://github.com/nvm-sh/nvm) o [NodeSource](https://nodesource.com/).
 
-2. **Clona el repositorio, instala dependencias y ejecuta Faktum:**
+2. Clona el repositorio, instala dependencias e inicia la aplicación:
    ```bash
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
@@ -167,21 +149,16 @@ Actualmente Linux se instala y ejecuta desde el código fuente (con posibilidad 
    npm start
    ```
 
-3. *(Opcional)* Si tu sistema restringe el sandbox de Chromium en Electron, puedes ejecutar:
+3. *(Opcional)* Si tu distribución restringe el sandbox de Chromium en Electron, ejecuta:
    ```bash
    npm run build && npx electron . --no-sandbox
-   ```
-
-4. *(Opcional)* Para empaquetar una versión local en Linux (por ejemplo `AppImage`):
-   ```bash
-   npm run build && npx electron-builder --linux AppImage --publish never
    ```
 
 ---
 
 ## Modo desarrollo
 
-Inicia el servidor de desarrollo de Vite con recarga en vivo junto con la ventana de Electron (funciona en Windows, macOS y Linux):
+Inicia el servidor de desarrollo de Vite con recarga en vivo junto con la ventana de Electron (Windows, macOS y Linux):
 
 ```bash
 npm run dev
@@ -193,22 +170,15 @@ npm run dev
 npm test
 ```
 
-## Empaquetado e instaladores
+## Actualizar a la última versión
 
-Compilación local mediante `electron-builder`:
+Desde la carpeta del proyecto:
 
 ```bash
-# macOS (.dmg y .zip)
-npm run dist:mac
-
-# Windows (instalador NSIS y ejecutable portable)
-npm run dist:win
-
-# macOS y Windows
-npm run dist:all
+git pull origin main
+npm install
+npm start
 ```
-
-El repositorio incluye el flujo `.github/workflows/build.yml` configurado para compilar los instaladores de macOS y Windows automáticamente en GitHub Actions al publicar etiquetas `v*` o mediante ejecución manual (`workflow_dispatch`).
 
 ## Seguridad y privacidad
 
