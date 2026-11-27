@@ -1,0 +1,28 @@
+appId: com.faktum.sri
+productName: Faktum
+directories:
+  output: release
+  buildResources: build
+files:
+  - dist/**/*
+  - build/icon.png
+  - package.json
+mac:
+  icon: build/icon.icns
+  category: public.app-category.finance
+  target:
+    - dmg
+    - zip
+  artifactName: Faktum-${version}-${arch}.${ext}
+win:
+  icon: build/icon.ico
+  target:
+    - nsis
+    - portable
+  artifactName: Faktum-${version}-${arch}.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Faktum
