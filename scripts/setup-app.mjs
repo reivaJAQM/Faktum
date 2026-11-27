@@ -20,19 +20,54 @@ const APP_VERSION = pkg.version || '1.0.0';
 const APP_NAME = 'Faktum';
 const MAC_BUNDLE_ID = 'com.faktum.sri.launcher';
 
+function readInstalledElectronBinary(electronDir) {
+  const pathFile = path.join(electronDir, 'path.txt');
+  if (!fs.existsSync(pathFile)) return null;
+  const relPath = fs.readFileSync(pathFile, 'utf-8').trim();
+  if (!relPath) return null;
+  const candidate = path.resolve(electronDir, 'dist', relPath);
+  return fs.existsSync(candidate) ? candidate : null;
+}
+
 function resolveElectronBinary() {
-  let binPath;
-  try {
-    binPath = require('electron');
-  } catch {
+  const electronDir = path.join(ROOT_DIR, 'node_modules', 'electron');
+  if (!fs.existsSync(electronDir)) {
     throw new Error(
       'No se encontró Electron en node_modules. Ejecuta primero "npm install".'
     );
   }
-  if (typeof binPath !== 'string' || !fs.existsSync(binPath)) {
-    throw new Error(`El binario de Electron no existe en: ${binPath}`);
+
+  let binPath = readInstalledElectronBinary(electronDir);
+  if (!binPath) {
+    const installScript = path.join(electronDir, 'install.js');
+    if (fs.existsSync(installScript)) {
+      console.log('Descargando binario de Electron...');
+      execFileSync(process.execPath, [installScript], {
+        cwd: electronDir,
+        stdio: 'inherit',
+      });
+      binPath = readInstalledElectronBinary(electronDir);
+    }
   }
-  return path.resolve(binPath);
+
+  if (!binPath) {
+    try {
+      const resolved = require('electron');
+      if (typeof resolved === 'string' && fs.existsSync(resolved)) {
+        binPath = path.resolve(resolved);
+      }
+    } catch {
+      // handled below
+    }
+  }
+
+  if (!binPath) {
+    throw new Error(
+      'No se pudo descargar o localizar el binario de Electron. Ejecuta "node node_modules/electron/install.js" e intenta de nuevo.'
+    );
+  }
+
+  return binPath;
 }
 
 function assertBuilt() {

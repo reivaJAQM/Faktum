@@ -5,6 +5,10 @@
   "author": "Faktum",
   "private": true,
   "main": "dist/main/index.js",
+  "allowScripts": {
+    "electron": true,
+    "esbuild": true
+  },
   "scripts": {
     "dev": "npm run build:electron && concurrently -k \"npm run dev:renderer\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
     "dev:renderer": "vite",
