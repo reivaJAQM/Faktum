@@ -18,7 +18,7 @@ Aplicación de escritorio multiplataforma (**Windows**, **macOS** y **Linux**) p
 
 ## Organización de archivos generados
 
-Los archivos descargados se estructuran automáticamente por empresa/RUC, año, mes, formato y tipo de comprobante, utilizando nombres seguros compatibles con macOS y Windows:
+Los archivos descargados se estructuran automáticamente por empresa/RUC, año, mes, formato y tipo de comprobante, utilizando nombres compatibles con Windows, macOS y Linux:
 
 ```text
 <CarpetaDestino>/
@@ -79,92 +79,74 @@ tests/
 
 ## Requisitos previos
 
-- **Node.js 20 o superior** (recomendado **Node.js 22 LTS**).
-- **npm 10 o superior** (incluido con Node.js).
-- **Git**.
+- Node.js 20 o superior (recomendado Node.js 22 LTS)
+- npm 10 o superior
+- Git
 
-## Instalación por línea de comandos (sin terminal en el uso diario)
+## Instalación
 
-La instalación se realiza una sola vez desde la terminal. El comando `npm run setup` compila la aplicación y crea los accesos directos nativos con el ícono de **Faktum** para abrirla directamente sin tener que ejecutar `npm start` ni dejar abierta ninguna ventana de terminal.
+El comando `npm run setup` compila el proyecto y registra la aplicación en el sistema operativo (Escritorio y Menú Inicio en Windows; `/Applications/Faktum.app` en macOS; menú de aplicaciones en Linux). Mantén el directorio del repositorio en su ubicación tras la instalación.
 
-> **Importante:** No borres la carpeta `Faktum` después de instalar, ya que los accesos directos ejecutan la aplicación desde esa ubicación.
+### Windows
 
-### Windows (PowerShell o CMD)
+```powershell
+winget install --id Git.Git -e
+winget install --id OpenJS.NodeJS.LTS -e
+```
 
-1. Instala **Git** y **Node.js 22 LTS** con `winget`:
-   ```powershell
-   winget install --id Git.Git -e
-   winget install --id OpenJS.NodeJS.LTS -e
-   ```
-   *(Reinicia PowerShell/CMD tras la instalación para que `git`, `node` y `npm` queden disponibles en el `PATH`.)*
+En una nueva sesión de PowerShell o CMD:
 
-2. Clona el repositorio, instala dependencias y registra la aplicación:
-   ```powershell
-   git clone https://github.com/reivaJAQM/Faktum.git
-   cd Faktum
-   npm install
-   npm run setup
-   ```
+```powershell
+git clone https://github.com/reivaJAQM/Faktum.git
+cd Faktum
+npm install
+npm run setup
+```
 
-3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará disponible en el **Escritorio** y en el **Menú Inicio** y abrirá directamente sin consola.
+### macOS
 
----
+```bash
+brew install git node@22
+git clone https://github.com/reivaJAQM/Faktum.git
+cd Faktum
+npm install
+npm run setup
+```
 
-### macOS (Terminal)
+### Linux
 
-1. Instala **Git** y **Node.js** (con [Homebrew](https://brew.sh/)):
-   ```bash
-   brew install git node@22
-   ```
-   *(Si ya tienes `git` y Node.js 20+ mediante `nvm` o `fnm`, omite este paso.)*
+Dependencias del sistema:
 
-2. Clona el repositorio, instala dependencias y registra la aplicación:
-   ```bash
-   git clone https://github.com/reivaJAQM/Faktum.git
-   cd Faktum
-   npm install
-   npm run setup
-   ```
+- **Ubuntu / Debian** *(usar `libasound2` en versiones anteriores a Ubuntu 24.04)*:
+  ```bash
+  sudo apt update
+  sudo apt install -y git curl libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 gnome-keyring
+  ```
+- **Fedora:**
+  ```bash
+  sudo dnf install -y git nodejs npm nss atk at-spi2-atk cups-libs libdrm libxkbcommon libXcomposite libXdamage libXfixes libXrandr mesa-libgbm alsa-lib gnome-keyring
+  ```
+- **Arch Linux:**
+  ```bash
+  sudo pacman -S --needed git nodejs npm nss gtk3 libxss alsa-lib gnome-keyring
+  ```
 
-3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará en tu carpeta **Aplicaciones** (y disponible en **Launchpad** y **Spotlight** con `Cmd + Espacio`) y abrirá directamente sin terminal.
+Instalación:
 
----
+```bash
+git clone https://github.com/reivaJAQM/Faktum.git
+cd Faktum
+npm install
+npm run setup
+```
 
-### Linux (Terminal)
+En entornos Linux con restricción de sandbox de Chromium:
 
-1. Instala **Git**, **Node.js 20+** y las librerías base requeridas por Electron y el llavero seguro:
-   - **Ubuntu / Debian:**
-     ```bash
-     sudo apt update
-     sudo apt install -y git curl libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 gnome-keyring
-     ```
-     *(En versiones anteriores a Ubuntu 24.04 usa `libasound2` en lugar de `libasound2t64`.)*
-   - **Fedora:**
-     ```bash
-     sudo dnf install -y git nodejs npm nss atk at-spi2-atk cups-libs libdrm libxkbcommon libXcomposite libXdamage libXfixes libXrandr mesa-libgbm alsa-lib gnome-keyring
-     ```
-   - **Arch Linux:**
-     ```bash
-     sudo pacman -S --needed git nodejs npm nss gtk3 libxss alsa-lib gnome-keyring
-     ```
-   > Si tu distribución incluye una versión anterior de Node.js, instala **Node.js 22 LTS** con [nvm](https://github.com/nvm-sh/nvm) o [NodeSource](https://nodesource.com/).
+```bash
+npm run setup -- --no-sandbox
+```
 
-2. Clona el repositorio, instala dependencias y registra la aplicación:
-   ```bash
-   git clone https://github.com/reivaJAQM/Faktum.git
-   cd Faktum
-   npm install
-   npm run setup
-   ```
-   *(Si tu distribución restringe el sandbox de Chromium en Electron, ejecuta `npm run setup -- --no-sandbox`.)*
-
-3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará registrado en el **menú de aplicaciones** (y en el Escritorio si existe) y abrirá sin consola.
-
----
-
-## Actualizar a la última versión
-
-Desde la carpeta `Faktum`:
+## Actualización
 
 ```bash
 git pull origin main
@@ -172,23 +154,16 @@ npm install
 npm run build
 ```
 
-Los accesos directos creados previamente abrirán automáticamente la versión actualizada.
-
-## Desinstalar accesos directos
-
-Si deseas quitar los accesos directos del sistema operativo:
+## Desinstalación
 
 ```bash
 npm run uninstall-app
 ```
 
-## Modo desarrollo y pruebas
+## Desarrollo y pruebas
 
 ```bash
-# Modo desarrollo con recarga en vivo
 npm run dev
-
-# Ejecutar pruebas automatizadas
 npm test
 ```
 
