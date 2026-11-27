@@ -35,6 +35,6 @@ jobs:
           name: faktum-${{ runner.os }}
           if-no-files-found: error
           path: |
-            release/*.exe
-            release/*.dmg
-            release/*.zip
+            release/Faktum-*.exe
+            release/Faktum-*.dmg
+            release/Faktum-*.zip
