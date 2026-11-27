@@ -83,24 +83,30 @@ tests/
 - **npm 10 o superior** (incluido con Node.js).
 - **Git**.
 
-## Instalación y ejecución por línea de comandos
+## Instalación por línea de comandos (sin terminal en el uso diario)
+
+La instalación se realiza una sola vez desde la terminal. El comando `npm run setup` compila la aplicación y crea los accesos directos nativos con el ícono de **Faktum** para abrirla directamente sin tener que ejecutar `npm start` ni dejar abierta ninguna ventana de terminal.
+
+> **Importante:** No borres la carpeta `Faktum` después de instalar, ya que los accesos directos ejecutan la aplicación desde esa ubicación.
 
 ### Windows (PowerShell o CMD)
 
-1. Instala **Git** y **Node.js 22 LTS** desde la terminal con `winget`:
+1. Instala **Git** y **Node.js 22 LTS** con `winget`:
    ```powershell
    winget install --id Git.Git -e
    winget install --id OpenJS.NodeJS.LTS -e
    ```
    *(Reinicia PowerShell/CMD tras la instalación para que `git`, `node` y `npm` queden disponibles en el `PATH`.)*
 
-2. Clona el repositorio, instala dependencias e inicia la aplicación:
+2. Clona el repositorio, instala dependencias y registra la aplicación:
    ```powershell
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
    npm install
-   npm start
+   npm run setup
    ```
+
+3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará disponible en el **Escritorio** y en el **Menú Inicio** y abrirá directamente sin consola.
 
 ---
 
@@ -112,13 +118,15 @@ tests/
    ```
    *(Si ya tienes `git` y Node.js 20+ mediante `nvm` o `fnm`, omite este paso.)*
 
-2. Clona el repositorio, instala dependencias e inicia la aplicación:
+2. Clona el repositorio, instala dependencias y registra la aplicación:
    ```bash
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
    npm install
-   npm start
+   npm run setup
    ```
+
+3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará en tu carpeta **Aplicaciones** (y disponible en **Launchpad** y **Spotlight** con `Cmd + Espacio`) y abrirá directamente sin terminal.
 
 ---
 
@@ -141,43 +149,47 @@ tests/
      ```
    > Si tu distribución incluye una versión anterior de Node.js, instala **Node.js 22 LTS** con [nvm](https://github.com/nvm-sh/nvm) o [NodeSource](https://nodesource.com/).
 
-2. Clona el repositorio, instala dependencias e inicia la aplicación:
+2. Clona el repositorio, instala dependencias y registra la aplicación:
    ```bash
    git clone https://github.com/reivaJAQM/Faktum.git
    cd Faktum
    npm install
-   npm start
+   npm run setup
    ```
+   *(Si tu distribución restringe el sandbox de Chromium en Electron, ejecuta `npm run setup -- --no-sandbox`.)*
 
-3. *(Opcional)* Si tu distribución restringe el sandbox de Chromium en Electron, ejecuta:
-   ```bash
-   npm run build && npx electron . --no-sandbox
-   ```
+3. **Listo:** ya puedes cerrar la terminal. **Faktum** quedará registrado en el **menú de aplicaciones** (y en el Escritorio si existe) y abrirá sin consola.
 
 ---
 
-## Modo desarrollo
-
-Inicia el servidor de desarrollo de Vite con recarga en vivo junto con la ventana de Electron (Windows, macOS y Linux):
-
-```bash
-npm run dev
-```
-
-## Pruebas automatizadas
-
-```bash
-npm test
-```
-
 ## Actualizar a la última versión
 
-Desde la carpeta del proyecto:
+Desde la carpeta `Faktum`:
 
 ```bash
 git pull origin main
 npm install
-npm start
+npm run build
+```
+
+Los accesos directos creados previamente abrirán automáticamente la versión actualizada.
+
+## Desinstalar accesos directos
+
+Si deseas quitar los accesos directos del sistema operativo:
+
+```bash
+npm run uninstall-app
+```
+
+## Modo desarrollo y pruebas
+
+```bash
+# Modo desarrollo con recarga en vivo
+npm run dev
+
+# Ejecutar pruebas automatizadas
+npm test
 ```
 
 ## Seguridad y privacidad

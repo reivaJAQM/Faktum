@@ -11,6 +11,8 @@
     "build:electron": "tsc -p tsconfig.main.json",
     "build:renderer": "vite build",
     "build": "npm run build:electron && npm run build:renderer",
+    "setup": "npm run build && node scripts/setup-app.mjs",
+    "uninstall-app": "node scripts/setup-app.mjs --uninstall",
     "start": "npm run build && electron .",
     "brand:mac": "bash scripts/brand-mac-dev.sh",
     "postinstall": "node -e \"if (process.platform === 'darwin') require('node:child_process').execFileSync('bash', ['scripts/brand-mac-dev.sh'], { stdio: 'inherit' })\"",
