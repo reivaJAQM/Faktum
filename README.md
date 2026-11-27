@@ -1,10 +1,10 @@
 # Faktum
 
-Aplicación de escritorio multiplataforma (macOS y Windows) para la descarga masiva, organización y consolidación contable de comprobantes electrónicos recibidos del Servicio de Rentas Internas (SRI) de Ecuador.
+Aplicación de escritorio multiplataforma (**Windows**, **macOS** y **Linux**) para la descarga masiva, organización y consolidación contable de comprobantes electrónicos recibidos del Servicio de Rentas Internas (SRI) de Ecuador.
 
 ## Funcionalidades principales
 
-- **Gestión multi-RUC con sesiones aisladas:** Permite administrar múltiples contribuyentes o empresas desde una sola aplicación. Cada perfil mantiene su propia partición de sesión de navegador y almacena sus credenciales cifradas localmente mediante el llavero nativo del sistema operativo (macOS Keychain / Windows DPAPI).
+- **Gestión multi-RUC con sesiones aisladas:** Permite administrar múltiples contribuyentes o empresas desde una sola aplicación. Cada perfil mantiene su propia partición de sesión de navegador y almacena sus credenciales cifradas localmente mediante el llavero nativo del sistema operativo (Windows DPAPI, macOS Keychain o Secret Service / Keyring en Linux).
 - **Integración directa con SRI en Línea:** Incorpora el portal oficial del SRI dentro de la aplicación, aplica automáticamente los filtros de período y tipo de comprobante, e intercepta el listado de comprobantes en memoria sin requerir descargas manuales de archivos `.txt`.
 - **Descarga por mes o por rango de fechas:** Soporta consultas de un período puntual (año, mes y día) o rangos continuos entre dos fechas con avance secuencial por mes y generación de un resumen consolidado del rango.
 - **Obtención de XML oficial y PDF RIDE:**
@@ -77,31 +77,115 @@ tests/
 └── sri.test.ts                   # Pruebas unitarias de servicios núcleo
 ```
 
-## Requisitos previos
+## Requisitos previos (instalación desde código fuente)
 
-- Node.js 20 o superior (recomendado Node.js 22).
-- npm 10 o superior.
+- **Node.js 20 o superior** (recomendado **Node.js 22 LTS**).
+- **npm 10 o superior** (incluido con Node.js).
+- **Git** para clonar el repositorio.
 
-## Instalación y ejecución
+## Instalación por sistema operativo
 
-```bash
-git clone https://github.com/reivaJAQM/Faktum.git
-cd Faktum
-npm install
-npm start
-```
+### Windows (10 / 11 — 64 bits)
 
-### Modo desarrollo
+#### Opción A: Usando el instalador o versión portable
+1. Descarga desde la sección **Releases** o **Actions** del repositorio:
+   - `Faktum-Setup-<version>-x64.exe` (instalador clásico con acceso directo en Escritorio y Menú Inicio), o
+   - `Faktum-Portable-<version>-x64.exe` (ejecutable directo sin instalación).
+2. Ejecuta el archivo `.exe`.
+   > Si Windows Defender SmartScreen muestra una advertencia por aplicación sin firma comercial, haz clic en **Más información** → **Ejecutar de todas formas**.
 
-Inicia el servidor de desarrollo de Vite con recarga en vivo junto con la ventana de Electron:
+#### Opción B: Desde el código fuente
+1. Instala [Git for Windows](https://git-scm.com/download/win) y [Node.js LTS](https://nodejs.org/).
+2. Abre **PowerShell** o **Símbolo del sistema (CMD)** y ejecuta:
+   ```powershell
+   git clone https://github.com/reivaJAQM/Faktum.git
+   cd Faktum
+   npm install
+   npm start
+   ```
+3. *(Opcional)* Para generar tus propios ejecutables `.exe` en la carpeta `release/`:
+   ```powershell
+   npm run dist:win
+   ```
+
+---
+
+### macOS (Apple Silicon y Intel)
+
+#### Opción A: Usando el instalador `.dmg` o `.zip`
+1. Descarga `Faktum-<version>-arm64.dmg` (o `.zip`) desde **Releases** / **Actions**.
+2. Abre el `.dmg` y arrastra **Faktum** a la carpeta **Aplicaciones**.
+3. Si macOS indica que la app proviene de un desarrollador no identificado (Gatekeeper), quita el atributo de cuarentena desde **Terminal**:
+   ```bash
+   xattr -cr /Applications/Faktum.app
+   ```
+   Luego abre **Faktum** normalmente.
+
+#### Opción B: Desde el código fuente
+1. Instala [Node.js LTS](https://nodejs.org/) (o con Homebrew: `brew install node git`).
+2. Abre **Terminal** y ejecuta:
+   ```bash
+   git clone https://github.com/reivaJAQM/Faktum.git
+   cd Faktum
+   npm install
+   npm start
+   ```
+3. **Inicio rápido con doble clic:** El repositorio incluye el lanzador ejecutable `Iniciar Faktum.command`. Al abrirlo desde Finder, detecta automáticamente tu entorno de Node.js (`fnm`, `nvm` o Homebrew), compila si hay cambios pendientes en `src/` e inicia la aplicación.
+4. *(Opcional)* Para generar los instaladores `.dmg` y `.zip` en `release/`:
+   ```bash
+   npm run dist:mac
+   ```
+
+---
+
+### Linux (Ubuntu, Debian, Fedora, Arch, etc.)
+
+Actualmente Linux se instala y ejecuta desde el código fuente (con posibilidad de generar paquetes locales mediante `electron-builder`).
+
+1. **Instala Git, Node.js 20+ y las dependencias base de escritorio / llavero seguro:**
+   - **Ubuntu / Debian:**
+     ```bash
+     sudo apt update
+     sudo apt install -y git curl libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2t64 gnome-keyring
+     ```
+     *(En versiones anteriores a Ubuntu 24.04 usa `libasound2` en lugar de `libasound2t64`.)*
+   - **Fedora:**
+     ```bash
+     sudo dnf install -y git nodejs npm nss atk at-spi2-atk cups-libs libdrm libxkbcommon libXcomposite libXdamage libXfixes libXrandr mesa-libgbm alsa-lib gnome-keyring
+     ```
+   - **Arch Linux:**
+     ```bash
+     sudo pacman -S --needed git nodejs npm nss gtk3 libxss alsa-lib gnome-keyring
+     ```
+   > Si tu distribución trae una versión antigua de Node.js, instala **Node.js 22 LTS** con [nvm](https://github.com/nvm-sh/nvm) o [NodeSource](https://nodesource.com/).
+
+2. **Clona el repositorio, instala dependencias y ejecuta Faktum:**
+   ```bash
+   git clone https://github.com/reivaJAQM/Faktum.git
+   cd Faktum
+   npm install
+   npm start
+   ```
+
+3. *(Opcional)* Si tu sistema restringe el sandbox de Chromium en Electron, puedes ejecutar:
+   ```bash
+   npm run build && npx electron . --no-sandbox
+   ```
+
+4. *(Opcional)* Para empaquetar una versión local en Linux (por ejemplo `AppImage`):
+   ```bash
+   npm run build && npx electron-builder --linux AppImage --publish never
+   ```
+
+---
+
+## Modo desarrollo
+
+Inicia el servidor de desarrollo de Vite con recarga en vivo junto con la ventana de Electron (funciona en Windows, macOS y Linux):
 
 ```bash
 npm run dev
 ```
-
-### Inicio rápido en macOS
-
-El repositorio incluye el lanzador ejecutable `Iniciar Faktum.command`. Al abrirlo desde Finder, detecta el entorno de Node.js (`fnm`, `nvm` o Homebrew), compila automáticamente si existen cambios pendientes en `src/` e inicia la aplicación.
 
 ## Pruebas automatizadas
 
@@ -120,7 +204,7 @@ npm run dist:mac
 # Windows (instalador NSIS y ejecutable portable)
 npm run dist:win
 
-# Ambas plataformas
+# macOS y Windows
 npm run dist:all
 ```
 
@@ -131,3 +215,7 @@ El repositorio incluye el flujo `.github/workflows/build.yml` configurado para c
 - Las credenciales del SRI se cifran utilizando `safeStorage` de Electron sobre el llavero seguro del sistema operativo y nunca se transmiten a servidores externos distintos al portal oficial del SRI.
 - Cada perfil de RUC opera en una partición aislada (`persist:sri-<RUC>`).
 - Los archivos locales de registro (`sri-trace.log`), variables de entorno y salidas de compilación están excluidos del control de versiones mediante `.gitignore`.
+
+---
+
+Desarrollado por **SystMa**.

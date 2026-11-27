@@ -127,7 +127,6 @@ export const App: React.FC = () => {
   const activeComprobantes = selectedProfileId
     ? comprobantes.filter((c) => c.profileId === selectedProfileId)
     : [];
-  const activeProfile = profiles.find((p) => p.id === selectedProfileId) ?? null;
 
   const handleConfirmSelectedDownload = async (entries: CapturedKeyEntry[], formats: DownloadFormats) => {
     if (!capturedBatch) return;
@@ -223,15 +222,8 @@ export const App: React.FC = () => {
         </nav>
 
         <div className="sidebar-footer">
-          <strong>{activeProfile ? activeProfile.alias : 'Sin cuenta activa'}</strong>
-          {activeProfile ? (
-            <>
-              <span className="mono">{activeProfile.ruc}</span>
-              <span>{activeComprobantes.length} comprobantes</span>
-            </>
-          ) : (
-            <span>Selecciona un RUC para trabajar</span>
-          )}
+          <span className="sidebar-footer-label">Desarrollado por</span>
+          <strong>SystMa</strong>
         </div>
       </aside>
 
